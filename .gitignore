@@ -22,3 +22,6 @@ rustc-ice-*.txt
 # Local user config/ignore files (keep *.example tracked)
 # noren-wm.conf
 # noren-wm.ignore
+
+# Personal plan
+PLAN.md
