@@ -23,7 +23,7 @@ use windows::core::HRESULT;
 
 use super::App;
 use crate::consts::PARK_X;
-use crate::winutil::{bounds, ext_bounds, insets, is_hung, wid, work_area};
+use crate::winutil::{bounds, ext_bounds, insets, is_hung, wid};
 use crate::{osd, safety, taskbar, tray};
 
 /// Workspace-switch slide direction: `enter_from` = starting side for incoming
@@ -134,13 +134,21 @@ impl App {
                 .max()
                 .unwrap_or(0)
                 .max(active + 1);
-            osd::notify(
-                active,
-                total,
-                self.cfg.overview_colors,
-                work_area(),
-                self.cfg.workspace_osd_dots,
-            );
+            let has_provider = self.nip.as_ref().is_some_and(|n| n.has_osd_provider());
+            let handed_off = crate::nip::should_handoff_osd(self.cfg.osd_handoff, has_provider)
+                && self
+                    .nip
+                    .as_ref()
+                    .is_some_and(|n| n.send_workspace_osd(active, total, self.cfg.workspace_osd_dots));
+            if !handed_off {
+                osd::notify(
+                    active,
+                    total,
+                    self.cfg.overview_colors,
+                    self.effective_work_area(),
+                    self.cfg.workspace_osd_dots,
+                );
+            }
         }
     }
 

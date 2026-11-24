@@ -19,7 +19,7 @@ use crate::consts::{
     HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP, HOTKEY_WS_PREV, HOTKEY_WS_SEND,
     HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV,
 };
-use crate::winutil::{manageable, wid, work_area};
+use crate::winutil::{manageable, wid};
 use crate::{cheatsheet, hook, tray};
 use crate::config::HeightMode;
 use layout::{Dir, Rect, WindowId};
@@ -129,7 +129,7 @@ impl App {
                 self.ws.cur_mut().reset_split();
             }
             HOTKEY_CHEATSHEET => {
-                cheatsheet::toggle(work_area(), &self.cfg);
+                cheatsheet::toggle(self.effective_work_area(), &self.cfg);
                 return;
             }
             HOTKEY_CLOSE => {
@@ -219,7 +219,7 @@ impl App {
         let (Some(&hwnd), Some(&(l, t, r, b))) = (self.map.get(&src), self.actual.get(&src)) else {
             return;
         };
-        let work = work_area();
+        let work = self.effective_work_area();
         let new_rect = Rect {
             x: l,
             y: t,

@@ -36,6 +36,7 @@ mod consts;
 mod hook;
 mod layout_state;
 mod log;
+mod nip;
 mod osd;
 mod overview;
 mod pick_overlay;
@@ -72,9 +73,31 @@ use crate::consts::{
     WM_SNAP_CANCEL, WM_SNAP_PICK, WM_WINEVENT,
 };
 use crate::hook::{win_event_proc, KeyboardHookThread, MAIN_THREAD};
-use crate::winutil::{release_single_instance, single_instance, work_area};
+use crate::winutil::{release_single_instance, single_instance};
 
 fn main() {
+    if std::env::args().any(|a| a == "--nip-self-test") {
+        if let Err(e) = nip::run_nip_self_test() {
+            eprintln!("WM_NIP_SELF_TEST=FAIL ({e})");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if std::env::args().any(|a| a == "--probe-wm") {
+        if let Err(e) = nip::run_probe_wm() {
+            eprintln!("WM_LIVE_PROBE=FAIL ({e})");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(res) = noren_sdk::control_center::maybe_run_control_center_from_args() {
+        if let Err(e) = res {
+            eprintln!("noren-wm control center error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     unsafe {
         if !single_instance() {
             #[cfg(debug_assertions)]
@@ -148,6 +171,7 @@ fn main() {
         MAIN_THREAD.store(GetCurrentThreadId(), Ordering::Relaxed);
         safety::install(GetCurrentThreadId());
         theme::init();
+        theme::init_noren_theme();
         taskbar::init();
         if !overview::init(GetCurrentThreadId()) {
             log_warn!("failed to create overview window");
@@ -250,6 +274,13 @@ fn main() {
         if changed {
             app.apply();
         }
+        app.nip = match nip::NipRuntime::start(GetCurrentThreadId(), app.workspace_state_json()) {
+            Ok(rt) => Some(rt),
+            Err(e) => {
+                log_warn!("NIP disabled (running standalone): {e}");
+                None
+            }
+        };
 
         app::show_config_problems(&report); // Show config typos immediately.
         let mut restart_elevated = false;
@@ -265,8 +296,14 @@ fn main() {
                     app.on_hotkey(id);
                 }
                 tray::WM_TRAY_PAUSE => app.toggle_pause(),
+                tray::WM_TRAY_SETTINGS => {
+                    if let Err(e) = noren_sdk::control_center::open_control_center(Some("wm")) {
+                        log_warn!("failed to open Control Center: {e}");
+                    }
+                }
                 tray::WM_TRAY_RELOAD => app.reload_config(),
-                tray::WM_TRAY_HELP => cheatsheet::toggle(work_area(), &app.cfg),
+                tray::WM_TRAY_HELP => cheatsheet::toggle(app.effective_work_area(), &app.cfg),
+                nip::WM_NIP_EVENT => app.handle_nip_events(),
                 tray::WM_TRAY_ELEVATE => {
                     restart_elevated = true;
                     break;
@@ -356,6 +393,9 @@ fn main() {
         }
         if let Some(h) = hook {
             h.stop();
+        }
+        if let Some(mut rt) = app.nip.take() {
+            rt.shutdown();
         }
         tray::remove();
         app.unstick_all();

@@ -10,12 +10,12 @@ gap = 16
 # (160 ms, otomatis mati kalau "Animation effects" Windows dimatikan).
 # anim_ms = 160
 
-# Warna border window yang fokus (Windows 11), format #RRGGBB. off = tidak diubah.
-# focus_border = #4FA8F5
+# Warna border window yang fokus (Windows 11), format #RRGGBB, accent (warna aksen Windows/Noren), atau off = tidak diubah.
+# focus_border = accent
 
-# Warna border window target saat membidik join (Windows 11), format #RRGGBB.
-# Kosong / off = ikut focus_border (atau #4FA8F5 kalau focus_border tidak diatur).
-# join_border = #FFBE3C
+# Warna border window target saat membidik join (Windows 11), format #RRGGBB, accent, atau off.
+# Kosong / off = ikut focus_border (atau warna aksen aktif kalau focus_border tidak diatur).
+# join_border = accent
 
 # --- Lebar lajur ---
 # Win+] menggeser pembagi ke kanan, Win+[ ke kiri, Win+\ mengembalikannya ke 50/50.
@@ -70,15 +70,15 @@ overview_label = title
 # Beberapa nama umum sudah bawaan (Code -> VS Code, msedge -> Edge, dst).
 # alias.wezterm-gui = WezTerm
 
-# Warna overview, format #RRGGBB (nilai di bawah adalah bawaan):
+# Warna overview, format #RRGGBB atau accent (warna aksen Windows/Noren) (nilai di bawah adalah bawaan):
 #   selected   = kursor: window yang akan dituju
 #   active     = window yang sedang aktif sekarang
 #   view       = bingkai bagian (baris) strip yang sedang tampil di layar
 #   background = latar panel
 #   box        = isi kotak window
-# overview_color_selected = #FFBE3C
-# overview_color_active = #4FA8F5
-# overview_color_view = #78C882
+# overview_color_selected = accent
+# overview_color_active = accent
+# overview_color_view = accent
 # overview_color_background = #14161C
 # overview_color_box = #2D3240
 
@@ -148,6 +148,9 @@ remember_layout = on
 workspace_osd = on
 # Show pill/dot indicators for each workspace below the label: on / off (default: off).
 workspace_osd_dots = off
+# Hand off workspace OSD to Notch (or another osd.workspace provider via NIP) when running.
+# When off, or when no provider is running, WM shows its own workspace OSD.
+osd_handoff = on
 
 # --- Overview: wrap-around arrow navigation ---
 # on (default): arrow keys in the overview wrap around. Up on the top row goes to the

@@ -30,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use super::App;
 use crate::consts::{EVENT_DEBOUNCE_MS, SNAP_TICK_MS};
 use crate::hook::SNAP_OPEN;
-use crate::winutil::{bounds, ext_bounds, title, wid, work_area, Bounds};
+use crate::winutil::{bounds, ext_bounds, title, wid, Bounds};
 use crate::{config, rules, safety, snap_menu, snap_slots, tray};
 
 /// Distance (pixels) from the menu panel still considered "inside" so it does not
@@ -177,7 +177,7 @@ impl App {
         if GetCursorPos(&mut pt).is_err() {
             return;
         }
-        let work = work_area();
+        let work = self.effective_work_area();
         let in_band = pt.y < work.y + self.cfg.snap_trigger
             && pt.x >= work.x
             && pt.x < work.x + work.w;

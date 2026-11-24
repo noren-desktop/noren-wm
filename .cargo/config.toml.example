@@ -1,4 +1,7 @@
-# Copy this file to `.cargo/config.toml` (gitignored) to develop against a local checkout
-# of the vscroll-wm engine without pushing commits first.
+# Copy this file to `.cargo/config.toml` (gitignored) to develop against local checkouts
+# of the vscroll-wm engine or noren-sdk without pushing commits first.
 [patch."https://github.com/jack-dozen/vscroll-wm.git"]
 vscroll-layout = { path = "../../wm pokonya/vscroll-wm" }
+
+[patch."https://github.com/noren-desktop/noren-sdk.git"]
+noren-sdk = { path = "../noren-sdk" }

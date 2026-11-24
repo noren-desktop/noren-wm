@@ -14,9 +14,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use layout::{WindowId, Workspaces};
+use layout::{Rect, WindowId, Workspaces};
+use noren_sdk::protocol::CAP_LAYOUT_RESERVED_AREA;
+use noren_sdk::schema::FieldValue;
+use noren_sdk::storage::{load_kv_file, save_kv_preserving_comments};
+use noren_sdk::NipEvent;
+use serde_json::{json, Value};
 
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM};
+use windows::Win32::UI::Shell::ShellExecuteW;
 
 #[allow(unused_imports)]
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -33,7 +40,7 @@ use crate::winutil::{
     animations_enabled, bounds, collect, ext_bounds, is_hung, place, set_border, wid,
     work_area, Bounds,
 };
-use crate::{bindings, config, overview, rules, safety, taskbar};
+use crate::{bindings, cheatsheet, config, nip, overview, rules, safety, taskbar};
 use workspace::{slide_dir, Slide};
 
 /// `join` targeting mode: hold the modifier to point `src` at `target` with the arrows,
@@ -87,8 +94,8 @@ pub(crate) struct App {
     /// 0 = animation timer is stopped (no idle overhead).
     pub(crate) anim_timer: usize,
     pub(crate) anim_ms: f32,
-    /// Focused window border color (COLORREF), from config.
-    pub(crate) focus_border: Option<u32>,
+    /// Focused window border setting, from config.
+    pub(crate) focus_border: Option<config::BorderColor>,
     /// Window whose border is currently colored, so it can be restored.
     pub(crate) border_applied: Option<(HWND, u32)>,
     pub(crate) overview: Option<OverviewSession>,
@@ -111,6 +118,10 @@ pub(crate) struct App {
     pub(crate) join_aim: Option<JoinAim>,
     /// Lift-and-drop (`pick`) mode with an overlay marker on the desktop.
     pub(crate) pick: Option<PickSession>,
+    /// Reserved outer screen insets from `layout.reserved-area` providers (e.g. Bar).
+    pub(crate) reserved: nip::ReservedAreaTracker,
+    /// Optional NIP node runtime (None in tests or if pipe startup failed).
+    pub(crate) nip: Option<nip::NipRuntime>,
 }
 
 impl App {
@@ -143,6 +154,45 @@ impl App {
             border_applied: None,
             overview: None,
             cfg: config::Config::default(),
+            reserved: nip::ReservedAreaTracker::default(),
+            nip: None,
+        }
+    }
+
+    /// Windows work area minus any active `layout.reserved-area` outer insets.
+    pub(crate) unsafe fn effective_work_area(&self) -> Rect {
+        self.reserved.effective().apply_to(work_area())
+    }
+
+    /// JSON snapshot for the `workspace.state` capability.
+    pub(crate) fn workspace_state_json(&self) -> Value {
+        let active = self.ws.active();
+        let count = self.ws.count();
+        let paused = crate::tray::PAUSED.load(Ordering::Relaxed);
+        let elevated = crate::log::is_elevated();
+        let workspaces: Vec<Value> = (0..count)
+            .map(|i| {
+                json!({
+                    "index": i,
+                    "number": i + 1,
+                    "active": i == active,
+                    "windows": self.ws.window_ids(i).len(),
+                })
+            })
+            .collect();
+        json!({
+            "active": active,
+            "count": count,
+            "paused": paused,
+            "elevated": elevated,
+            "workspaces": workspaces,
+        })
+    }
+
+    pub(crate) fn publish_workspace_state(&mut self) {
+        let state = self.workspace_state_json();
+        if let Some(nip) = self.nip.as_mut() {
+            nip.publish_workspace_state(state);
         }
     }
 
@@ -187,7 +237,7 @@ impl App {
             changed = true;
         }
         let mut added = false;
-        let work = work_area();
+        let work = self.effective_work_area();
         for &h in &list {
             let id = wid(h);
             if self.floating.contains_key(&id) || self.blocked.contains_key(&id) {
@@ -337,7 +387,7 @@ impl App {
     }
 
     pub(crate) unsafe fn apply(&mut self) {
-        let work = work_area();
+        let work = self.effective_work_area();
         self.ws.set_viewport(work);
         let now = Instant::now();
         let slide = self.slide.take(); // Workspace-switch slide direction; use once.
@@ -440,6 +490,7 @@ impl App {
             self.anim_timer = SetTimer(None, 0, 10, None);
         }
         self.refresh_border();
+        self.publish_workspace_state();
     }
 
     /// Color the window CURRENTLY in the foreground (if tiled and focus_border
@@ -453,11 +504,13 @@ impl App {
                 .cfg
                 .join_border
                 .or(self.focus_border)
-                .unwrap_or(self.cfg.overview_colors.active);
+                .map(crate::theme::resolve_border_color)
+                .unwrap_or_else(|| crate::theme::Palette::resolve(self.cfg.overview_colors).accent);
             self.map.get(&aim.target).copied().map(|h| (h, color))
         } else {
             match self.focus_border {
-                Some(c) => {
+                Some(bc) => {
+                    let c = crate::theme::resolve_border_color(bc);
                     let fg = GetForegroundWindow();
                     let id = wid(fg);
                     (self.map.contains_key(&id) || self.floating.contains_key(&id))
@@ -501,7 +554,7 @@ impl App {
         rules::reload();
         let report = config::load();
         self.apply_config(&report.cfg);
-        let work = work_area();
+        let work = self.effective_work_area();
         let now_ignored: Vec<(WindowId, HWND, Option<i32>, Option<i32>, bool)> = self
             .map
             .iter()
@@ -570,4 +623,195 @@ impl App {
         self.apply();
         actions::show_config_problems(&report);
     }
+
+    /// Process all queued NIP events on the WM main thread.
+    pub(crate) unsafe fn handle_nip_events(&mut self) {
+        let Some(events) = self.nip.as_ref().map(|n| n.drain_events()) else {
+            return;
+        };
+        let paused = crate::tray::PAUSED.load(Ordering::Relaxed);
+        let mut need_reapply = false;
+
+        for ev in events {
+            match ev {
+                NipEvent::PeerConnected(_) => {
+                    self.publish_workspace_state();
+                }
+                NipEvent::PeerDisconnected { module, .. } => {
+                    if self.reserved.remove_peer(&module) {
+                        need_reapply = true;
+                    }
+                }
+                NipEvent::StateReceived {
+                    from, cap, data, ..
+                } => {
+                    if cap == CAP_LAYOUT_RESERVED_AREA {
+                        let area = nip::ReservedArea::from_json(&data);
+                        if self.reserved.set_peer(&from, area) {
+                            need_reapply = true;
+                        }
+                    }
+                }
+                NipEvent::ThemeChanged(theme) => {
+                    crate::theme::set_noren_theme(theme);
+                    self.refresh_border();
+                }
+                NipEvent::Command {
+                    name, data, reply, ..
+                } => {
+                    self.handle_nip_command(&name, data, reply);
+                }
+                NipEvent::EventReceived { .. } => {}
+            }
+        }
+
+        if need_reapply && !paused {
+            self.apply();
+        }
+    }
+
+    unsafe fn handle_nip_command(
+        &mut self,
+        name: &str,
+        data: Value,
+        reply: noren_sdk::ReplyHandle,
+    ) {
+        match name {
+            "ping" => {
+                let _ = reply.ok(json!({
+                    "ok": true,
+                    "module": "wm",
+                    "elevated": crate::log::is_elevated(),
+                }));
+            }
+            "overview" => {
+                if !crate::tray::PAUSED.load(Ordering::Relaxed) {
+                    self.toggle_overview();
+                }
+                let _ = reply.ok(json!({ "overview": self.overview.is_some() }));
+            }
+            "cheatsheet" => {
+                if !crate::tray::PAUSED.load(Ordering::Relaxed) {
+                    cheatsheet::toggle(self.effective_work_area(), &self.cfg);
+                }
+                let _ = reply.ok(json!({ "toggled": true }));
+            }
+            "reload" => {
+                self.reload_config();
+                let _ = reply.ok(json!({ "reloaded": true }));
+            }
+            "toggle_pause" => {
+                self.toggle_pause();
+                let _ = reply.ok(json!({
+                    "paused": crate::tray::PAUSED.load(Ordering::Relaxed)
+                }));
+            }
+            "config.apply" => {
+                match self.apply_config_from_nip(data) {
+                    Ok(path) => {
+                        self.reload_config();
+                        let _ = reply.ok(json!({
+                            "saved": true,
+                            "path": path.display().to_string(),
+                        }));
+                    }
+                    Err(e) => {
+                        let _ = reply.err(e);
+                    }
+                }
+            }
+            "open_rules_editor" => {
+                let target = ensure_canonical_file(
+                    rules::canonical_ignore_path(),
+                    Some(rules::active_ignore_path()),
+                    "# noren-wm window ignore rules (class:..., exe:..., title:...)\n",
+                );
+                match target.and_then(|p| open_file_in_editor(&p).map(|()| p)) {
+                    Ok(p) => {
+                        let _ = reply.ok(json!({ "opened": p.display().to_string() }));
+                    }
+                    Err(e) => {
+                        let _ = reply.err(e);
+                    }
+                }
+            }
+            "open_bindings_editor" | "open_snap_presets_editor" => {
+                let target = ensure_canonical_file(
+                    config::canonical_config_path(),
+                    config::active_config_path(),
+                    "# noren-wm configuration\n",
+                );
+                match target.and_then(|p| open_file_in_editor(&p).map(|()| p)) {
+                    Ok(p) => {
+                        let _ = reply.ok(json!({ "opened": p.display().to_string() }));
+                    }
+                    Err(e) => {
+                        let _ = reply.err(e);
+                    }
+                }
+            }
+            other => {
+                let _ = reply.err(format!("unsupported wm command '{other}'"));
+            }
+        }
+    }
+
+    fn apply_config_from_nip(&self, data: Value) -> Result<std::path::PathBuf, String> {
+        let Some(manifest) = self.nip.as_ref().map(|n| n.manifest().clone()) else {
+            return Err("NIP runtime not active".to_string());
+        };
+        let path = ensure_canonical_file(
+            config::canonical_config_path(),
+            config::active_config_path(),
+            "# noren-wm configuration\n",
+        )?;
+        let mut values = load_kv_file(&path, &manifest).map_err(|e| e.to_string())?;
+        let updates: HashMap<String, FieldValue> =
+            serde_json::from_value(data).map_err(|e| format!("invalid config payload: {e}"))?;
+        for (k, v) in updates {
+            values.insert(k, v);
+        }
+        save_kv_preserving_comments(&path, &manifest, &values).map_err(|e| e.to_string())?;
+        Ok(path)
+    }
+}
+
+fn ensure_canonical_file(
+    canonical: std::path::PathBuf,
+    fallback: Option<std::path::PathBuf>,
+    default_seed: &str,
+) -> Result<std::path::PathBuf, String> {
+    if canonical.exists() {
+        return Ok(canonical);
+    }
+    if let Some(parent) = canonical.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let seed = fallback
+        .filter(|p| *p != canonical && p.exists())
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| default_seed.to_string());
+    std::fs::write(&canonical, seed).map_err(|e| e.to_string())?;
+    Ok(canonical)
+}
+
+unsafe fn open_file_in_editor(path: &std::path::Path) -> Result<(), String> {
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let res = ShellExecuteW(
+        None,
+        w!("open"),
+        PCWSTR(wide.as_ptr()),
+        PCWSTR::null(),
+        None,
+        SW_SHOWNORMAL,
+    );
+    if (res.0 as isize) <= 32 {
+        return Err(format!("ShellExecuteW failed opening {}", path.display()));
+    }
+    Ok(())
 }

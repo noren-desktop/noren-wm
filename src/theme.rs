@@ -9,6 +9,7 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::RwLock;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
@@ -34,12 +35,58 @@ use windows::Win32::Graphics::GdiPlus::{
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 
-use crate::config::{rgb, OverviewColors};
+use crate::config::{rgb, BorderColor, OverviewColors, ACCENT_COLOR};
 
 static GDIPLUS_TOKEN: AtomicUsize = AtomicUsize::new(0);
 static HAS_SEGOE_VAR: AtomicBool = AtomicBool::new(false);
 static HAS_SEGOE_VAR_SEMIBOLD: AtomicBool = AtomicBool::new(false);
 static HAS_SEGOE_VAR_SMALL: AtomicBool = AtomicBool::new(false);
+static NOREN_THEME: RwLock<Option<noren_sdk::ThemeConfig>> = RwLock::new(None);
+
+/// Load shared Noren theme from `%APPDATA%\Noren\general.toml`.
+pub fn init_noren_theme() {
+    set_noren_theme(noren_sdk::theme::load_theme());
+}
+
+/// Update active Noren theme (e.g. upon receiving `theme.changed` over NIP).
+pub fn set_noren_theme(cfg: noren_sdk::ThemeConfig) {
+    if let Ok(mut guard) = NOREN_THEME.write() {
+        *guard = Some(cfg);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_noren_theme() {
+    if let Ok(mut guard) = NOREN_THEME.write() {
+        *guard = None;
+    }
+}
+
+/// Resolve the active Windows / Noren accent color as COLORREF (`0x00BBGGRR`).
+pub fn resolved_accent_color() -> u32 {
+    let active = NOREN_THEME.read().ok().and_then(|g| g.clone());
+    match active {
+        Some(cfg) => {
+            let (r, g, b) = cfg.resolve().accent_rgb;
+            rgb(r as u32, g as u32, b as u32)
+        }
+        None => system_accent().unwrap_or_else(|| {
+            if is_dark_mode() {
+                rgb(96, 205, 255)
+            } else {
+                rgb(0, 95, 184)
+            }
+        }),
+    }
+}
+
+/// Resolve a `BorderColor` (`Custom` or `Accent`) into a Win32 COLORREF (`0x00BBGGRR`).
+pub fn resolve_border_color(color: BorderColor) -> u32 {
+    match color {
+        BorderColor::Custom(c) => c,
+        BorderColor::Accent => resolved_accent_color(),
+    }
+}
 
 /// Initialize GDI+, check for the `Segoe UI Variable` font, and enable automatic
 /// dark/light theming for Win32 popup menus (`TrackPopupMenu`). Call once from `main`.
@@ -258,11 +305,21 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// Build a Fluent Design palette from the active Windows theme; preserve any
-    /// custom colors the user sets in `noren-wm.conf`.
+    /// Build a Fluent Design palette from the shared Noren theme (which defaults to
+    /// Windows dark/light mode and accent), preserving any custom colors set in `noren-wm.conf`.
     pub fn resolve(overrides: OverviewColors) -> Self {
-        let dark = is_dark_mode();
-        let raw_accent = system_accent();
+        let active = NOREN_THEME
+            .read()
+            .ok()
+            .and_then(|g| g.clone());
+        let (dark, raw_accent) = match active {
+            Some(cfg) => {
+                let resolved = cfg.resolve();
+                let (r, g, b) = resolved.accent_rgb;
+                (resolved.is_dark, Some(rgb(r as u32, g as u32, b as u32)))
+            }
+            None => (is_dark_mode(), system_accent()),
+        };
         Self::build(dark, raw_accent, overrides)
     }
 
@@ -290,40 +347,38 @@ impl Palette {
             None => rgb(0, 95, 184),           // #005FB8 (Fluent Light Blue)
         };
 
-        let mut surface = if dark {
+        let base_surface = if dark {
             rgb(32, 32, 32) // #202020 (SolidBackgroundFillColorBase / Acrylic Dark)
         } else {
             rgb(243, 243, 243) // #F3F3F3 (SolidBackgroundFillColorBase Light)
         };
-        let mut card = if dark {
+        let base_card = if dark {
             rgb(46, 46, 46) // #2E2E2E (CardBackgroundFillColorDefault Dark)
         } else {
             rgb(252, 252, 252) // #FCFCFC (CardBackgroundFillColorDefault Light)
         };
-        let mut accent = sys_accent;
-        let mut selected = sys_accent;
-        let mut view = if dark {
+        let base_view = if dark {
             mix(sys_accent, rgb(255, 255, 255), 25)
         } else {
             mix(sys_accent, rgb(0, 0, 0), 10)
         };
 
-        // Respect explicit overrides from noren-wm.conf.
-        if overrides.background != def.background {
-            surface = overrides.background;
-        }
-        if overrides.box_fill != def.box_fill {
-            card = overrides.box_fill;
-        }
-        if overrides.active != def.active {
-            accent = overrides.active;
-        }
-        if overrides.selected != def.selected {
-            selected = overrides.selected;
-        }
-        if overrides.view != def.view {
-            view = overrides.view;
-        }
+        let pick_override = |val: u32, def_val: u32, base: u32| -> u32 {
+            if val == ACCENT_COLOR {
+                sys_accent
+            } else if val != def_val {
+                val
+            } else {
+                base
+            }
+        };
+
+        // Respect explicit overrides (and `accent`) from noren-wm.conf.
+        let surface = pick_override(overrides.background, def.background, base_surface);
+        let card = pick_override(overrides.box_fill, def.box_fill, base_card);
+        let accent = pick_override(overrides.active, def.active, sys_accent);
+        let selected = pick_override(overrides.selected, def.selected, sys_accent);
+        let view = pick_override(overrides.view, def.view, base_view);
 
         let eff_dark = luminance(surface) <= 145;
         let layer = if eff_dark {
@@ -698,5 +753,54 @@ mod tests {
         let p = Palette::build(false, Some(rgb(0, 120, 212)), custom);
         assert_eq!(p.surface, rgb(10, 20, 30));
         assert_eq!(p.selected, rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn palette_resolve_honors_noren_theme_override() {
+        set_noren_theme(noren_sdk::ThemeConfig {
+            mode: noren_sdk::ThemeMode::Light,
+            material: noren_sdk::ThemeMaterial::Acrylic,
+            accent_mode: noren_sdk::AccentMode::Custom,
+            custom_accent: Some("#E06C75".to_string()),
+        });
+        let light = Palette::resolve(OverviewColors::default());
+        assert!(!light.dark);
+        assert_ne!(light.accent, 0);
+
+        set_noren_theme(noren_sdk::ThemeConfig {
+            mode: noren_sdk::ThemeMode::Dark,
+            material: noren_sdk::ThemeMaterial::Mica,
+            accent_mode: noren_sdk::AccentMode::Custom,
+            custom_accent: Some("#60CDFF".to_string()),
+        });
+        let dark = Palette::resolve(OverviewColors::default());
+        assert!(dark.dark);
+
+        clear_noren_theme();
+    }
+
+    #[test]
+    fn resolve_border_color_and_palette_support_accent() {
+        set_noren_theme(noren_sdk::ThemeConfig {
+            mode: noren_sdk::ThemeMode::Dark,
+            material: noren_sdk::ThemeMaterial::Mica,
+            accent_mode: noren_sdk::AccentMode::Custom,
+            custom_accent: Some("#E06C75".to_string()),
+        });
+        assert_eq!(
+            resolve_border_color(BorderColor::Accent),
+            rgb(0xE0, 0x6C, 0x75)
+        );
+        assert_eq!(
+            resolve_border_color(BorderColor::Custom(rgb(1, 2, 3))),
+            rgb(1, 2, 3)
+        );
+
+        let mut ov = OverviewColors::default();
+        ov.selected = ACCENT_COLOR;
+        let pal = Palette::build(true, Some(rgb(0xE0, 0x6C, 0x75)), ov);
+        assert_eq!(pal.selected, pal.accent);
+
+        clear_noren_theme();
     }
 }

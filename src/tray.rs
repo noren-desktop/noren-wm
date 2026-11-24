@@ -28,6 +28,8 @@ pub const WM_TRAY_HELP: u32 = WM_APP + 12;
 pub const WM_TRAY_SESSION_END: u32 = WM_APP + 27;
 /// Sent to the main thread: exit cleanly and relaunch elevated via UAC (`runas`).
 pub const WM_TRAY_ELEVATE: u32 = WM_APP + 28;
+/// Sent to the main thread: open Noren Control Center focused on the `wm` tab.
+pub const WM_TRAY_SETTINGS: u32 = WM_APP + 30;
 
 /// True = the app is paused: windows are restored to their original positions
 /// and all hotkeys are passed through to Windows as usual.
@@ -46,6 +48,7 @@ const ID_RELOAD: usize = 4;
 const ID_HELP: usize = 5;
 const ID_LOGS: usize = 6;
 const ID_ELEVATE: usize = 7;
+const ID_SETTINGS: usize = 8;
 
 const RUN_SUBKEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
 const RUN_VALUE: PCWSTR = w!("noren-wm");
@@ -95,58 +98,23 @@ pub fn set_autostart(on: bool) -> bool {
 
 // --------------------------------------------------------------------- icons
 
-/// A 32x32 Windows 11 Fluent-style icon: a rounded background and three rounded
-/// panels using the active Windows accent color (anti-aliased).
+/// Build the Noren system tray icon tinted for the current Windows taskbar theme.
 unsafe fn make_icon() -> Option<HICON> {
-    const N: usize = 32;
-    let pal = crate::theme::Palette::resolve(crate::config::OverviewColors::default());
-    let (ar, ag, ab) = (
-        (pal.accent & 0xFF) as f32,
-        ((pal.accent >> 8) & 0xFF) as f32,
-        ((pal.accent >> 16) & 0xFF) as f32,
-    );
-    let (br, bg, bb) = (
-        (pal.surface & 0xFF) as f32,
-        ((pal.surface >> 8) & 0xFF) as f32,
-        ((pal.surface >> 16) & 0xFF) as f32,
-    );
+    noren_sdk::branding::create_tray_icon(noren_sdk::branding::system_taskbar_is_dark())
+}
 
-    let rrect_cov = |px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32, rad: f32| -> f32 {
-        let cx = (x0 + x1) * 0.5;
-        let cy = (y0 + y1) * 0.5;
-        let hx = (x1 - x0) * 0.5 - rad;
-        let hy = (y1 - y0) * 0.5 - rad;
-        let qx = (px - cx).abs() - hx;
-        let qy = (py - cy).abs() - hy;
-        let dist = (qx.max(0.0).hypot(qy.max(0.0))) + qx.max(qy).min(0.0) - rad;
-        (0.5 - dist).clamp(0.0, 1.0)
+unsafe fn refresh_icon(hwnd: HWND) {
+    let Some(new_icon) = make_icon() else {
+        return;
     };
-
-    let mut xor = vec![0u8; N * N * 4];
-    for y in 0..N {
-        for x in 0..N {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
-            let bg_cov = rrect_cov(px, py, 1.0, 1.0, 31.0, 31.0, 6.0);
-            let p1 = rrect_cov(px, py, 4.5, 4.5, 14.5, 14.5, 2.5);
-            let p2 = rrect_cov(px, py, 4.5, 17.5, 14.5, 27.5, 2.5);
-            let p3 = rrect_cov(px, py, 17.5, 4.5, 27.5, 27.5, 2.5);
-            let pane_cov = p1.max(p2).max(p3);
-
-            let r = br + (ar - br) * pane_cov;
-            let g = bg + (ag - bg) * pane_cov;
-            let b = bb + (ab - bb) * pane_cov;
-            let a = (bg_cov * 255.0).round() as u8;
-
-            let i = (y * N + x) * 4;
-            xor[i] = b.round() as u8;
-            xor[i + 1] = g.round() as u8;
-            xor[i + 2] = r.round() as u8;
-            xor[i + 3] = a;
-        }
+    let old_raw = ICON.swap(new_icon.0 as isize, Ordering::Relaxed);
+    let mut n = nid(hwnd);
+    n.uFlags = NIF_ICON;
+    n.hIcon = new_icon;
+    let _ = Shell_NotifyIconW(NIM_MODIFY, &n);
+    if old_raw != 0 {
+        let _ = DestroyIcon(HICON(old_raw as *mut _));
     }
-    let and = vec![0u8; N * N / 8];
-    CreateIcon(None, N as i32, N as i32, 1, 32, and.as_ptr(), xor.as_ptr()).ok()
 }
 
 unsafe fn nid(hwnd: HWND) -> NOTIFYICONDATAW {
@@ -204,6 +172,7 @@ unsafe fn show_menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else { return };
     let paused = PAUSED.load(Ordering::Relaxed);
     let pause_txt = wide(if paused { "Resume" } else { "Pause" });
+    let settings_txt = wide("Settings (Control Center)");
     let reload_txt = wide("Reload configuration");
     let help_txt = wide("Keyboard shortcuts");
     let logs_txt = wide("Open log folder");
@@ -212,6 +181,7 @@ unsafe fn show_menu(hwnd: HWND) {
     let quit_txt = wide("Quit (restore windows)");
 
     let _ = AppendMenuW(menu, MF_STRING, ID_PAUSE, PCWSTR(pause_txt.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, PCWSTR(settings_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_RELOAD, PCWSTR(reload_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_HELP, PCWSTR(help_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_LOGS, PCWSTR(logs_txt.as_ptr()));
@@ -245,6 +215,7 @@ unsafe fn show_menu(hwnd: HWND) {
 
     match cmd.0 as usize {
         ID_PAUSE => post_main(WM_TRAY_PAUSE),
+        ID_SETTINGS => post_main(WM_TRAY_SETTINGS),
         ID_RELOAD => post_main(WM_TRAY_RELOAD),
         ID_HELP => post_main(WM_TRAY_HELP),
         ID_LOGS => crate::log::open_log_folder(),
@@ -273,6 +244,10 @@ unsafe extern "system" fn tray_proc(
     let tb = TASKBAR_CREATED.load(Ordering::Relaxed);
     if tb != 0 && msg == tb {
         add_icon(hwnd); // Explorer restarted: add the icon again.
+        return LRESULT(0);
+    }
+    if msg == WM_SETTINGCHANGE {
+        refresh_icon(hwnd);
         return LRESULT(0);
     }
     if msg == WM_QUERYENDSESSION {

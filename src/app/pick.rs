@@ -10,7 +10,6 @@ use super::App;
 use crate::consts::DIRS;
 use crate::hook;
 use crate::pick_overlay::{self, PickSlot, PickTarget};
-use crate::winutil::work_area;
 
 pub(crate) struct PickSession {
     pub(crate) src: WindowId,
@@ -63,7 +62,7 @@ impl App {
             self.ws.cur_mut().set_focus(anchor);
             self.apply();
         }
-        let work = work_area();
+        let work = self.effective_work_area();
         let ov = self.ws.cur().overview();
         let g = self.cfg.gap / 2;
         let x0 = (work.x + g + slot.rect.x).clamp(work.x, work.x + work.w - 1);
@@ -81,7 +80,8 @@ impl App {
             .cfg
             .join_border
             .or(self.focus_border)
-            .unwrap_or(self.cfg.overview_colors.active);
+            .map(crate::theme::resolve_border_color)
+            .unwrap_or_else(|| crate::theme::Palette::resolve(self.cfg.overview_colors).accent);
         pick_overlay::show(screen, color, icon);
     }
 

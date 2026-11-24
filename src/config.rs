@@ -58,6 +58,17 @@ pub const fn rgb(r: u32, g: u32, b: u32) -> u32 {
     r | (g << 8) | (b << 16)
 }
 
+/// Sentinel COLORREF value meaning "use the active Windows / Noren accent color".
+/// Safe because valid Win32 COLORREF values only use the lower 24 bits (`0x00BBGGRR`).
+pub const ACCENT_COLOR: u32 = 0x0100_0000;
+
+/// Border color setting for focused / join-target windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderColor {
+    Custom(u32),
+    Accent,
+}
+
 /// Overview colors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverviewColors {
@@ -116,10 +127,10 @@ pub struct Config {
     pub gap: i32,
     /// None = default (160 ms, or off when system animations are disabled).
     pub anim_ms: Option<f32>,
-    /// Focus border color as COLORREF (0x00BBGGRR). None = unchanged.
-    pub focus_border: Option<u32>,
-    /// Target border color while aiming in `join` mode (COLORREF). None = use `focus_border`.
-    pub join_border: Option<u32>,
+    /// Focus border color (`Custom(COLORREF)` or `Accent`). None = unchanged.
+    pub focus_border: Option<BorderColor>,
+    /// Target border color while aiming in `join` mode. None = use `focus_border`.
+    pub join_border: Option<BorderColor>,
     pub overview_hint: bool,
     pub overview_minimap: MinimapSide,
     pub overview_thumbnails: bool,
@@ -161,6 +172,8 @@ pub struct Config {
     pub rules: Vec<WindowRule>,
     /// Auto-minimize non-sticky floating windows when focus moves to another window.
     pub float_auto_minimize: bool,
+    /// Hand off workspace OSD to an `osd.workspace` NIP provider when running (default: on).
+    pub osd_handoff: bool,
 }
 
 impl Default for Config {
@@ -194,6 +207,7 @@ impl Default for Config {
             bindings: Bindings::defaults(),
             rules: Vec::new(),
             float_auto_minimize: true,
+            osd_handoff: true,
         }
     }
 }
@@ -232,11 +246,15 @@ impl Config {
                 },
                 "focus_border" => match parse_color(value) {
                     Some(color) => cfg.focus_border = color,
-                    None => warnings.push(format!("line {n}: focus_border must be #RRGGBB or off")),
+                    None => warnings.push(format!(
+                        "line {n}: focus_border must be #RRGGBB, accent, or off"
+                    )),
                 },
                 "join_border" => match parse_color(value) {
                     Some(color) => cfg.join_border = color,
-                    None => warnings.push(format!("line {n}: join_border must be #RRGGBB or off")),
+                    None => warnings.push(format!(
+                        "line {n}: join_border must be #RRGGBB, accent, or off"
+                    )),
                 },
                 "rule" => match WindowRule::parse(value) {
                     Ok(r) => cfg.rules.push(r),
@@ -301,21 +319,46 @@ impl Config {
                         "line {n}: overview_key must be tab, space, grave, off, or a single letter/digit (not q/m)"
                     )),
                 },
-                "overview_color_selected" => {
-                    color_setting(value, &mut cfg.overview_colors.selected, &key, n, &mut warnings)
-                }
-                "overview_color_active" => {
-                    color_setting(value, &mut cfg.overview_colors.active, &key, n, &mut warnings)
-                }
-                "overview_color_view" => {
-                    color_setting(value, &mut cfg.overview_colors.view, &key, n, &mut warnings)
-                }
-                "overview_color_background" => {
-                    color_setting(value, &mut cfg.overview_colors.background, &key, n, &mut warnings)
-                }
-                "overview_color_box" => {
-                    color_setting(value, &mut cfg.overview_colors.box_fill, &key, n, &mut warnings)
-                }
+                "overview_color_selected" => color_setting(
+                    value,
+                    &mut cfg.overview_colors.selected,
+                    OverviewColors::default().selected,
+                    &key,
+                    n,
+                    &mut warnings,
+                ),
+                "overview_color_active" => color_setting(
+                    value,
+                    &mut cfg.overview_colors.active,
+                    OverviewColors::default().active,
+                    &key,
+                    n,
+                    &mut warnings,
+                ),
+                "overview_color_view" => color_setting(
+                    value,
+                    &mut cfg.overview_colors.view,
+                    OverviewColors::default().view,
+                    &key,
+                    n,
+                    &mut warnings,
+                ),
+                "overview_color_background" => color_setting(
+                    value,
+                    &mut cfg.overview_colors.background,
+                    OverviewColors::default().background,
+                    &key,
+                    n,
+                    &mut warnings,
+                ),
+                "overview_color_box" => color_setting(
+                    value,
+                    &mut cfg.overview_colors.box_fill,
+                    OverviewColors::default().box_fill,
+                    &key,
+                    n,
+                    &mut warnings,
+                ),
                 "mouse_drag" => match parse_bool(value) {
                     Some(b) => cfg.mouse_drag = b,
                     None => warnings.push(format!("line {n}: mouse_drag must be on/off")),
@@ -331,6 +374,10 @@ impl Config {
                 "workspace_osd_dots" => match parse_bool(value) {
                     Some(b) => cfg.workspace_osd_dots = b,
                     None => warnings.push(format!("line {n}: workspace_osd_dots must be on/off")),
+                },
+                "osd_handoff" => match parse_bool(value) {
+                    Some(b) => cfg.osd_handoff = b,
+                    None => warnings.push(format!("line {n}: osd_handoff must be on/off")),
                 },
                 "overview_wrap" => match parse_bool(value) {
                     Some(b) => cfg.overview_wrap = b,
@@ -440,12 +487,19 @@ impl Config {
     }
 }
 
-/// "#RRGGBB" / "RRGGBB" -> Some(Some(COLORREF)); "off"/"none"/empty -> Some(None);
-/// otherwise None (invalid).
-fn parse_color(v: &str) -> Option<Option<u32>> {
+/// "#RRGGBB" / "RRGGBB" -> `Some(Some(BorderColor::Custom(COLORREF)))`;
+/// "accent" / "windows" / "system" -> `Some(Some(BorderColor::Accent))`;
+/// "off" / "none" / empty -> `Some(None)`; otherwise `None` (invalid).
+fn parse_color(v: &str) -> Option<Option<BorderColor>> {
     let v = v.trim();
     if v.is_empty() || v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("none") {
         return Some(None);
+    }
+    if v.eq_ignore_ascii_case("accent")
+        || v.eq_ignore_ascii_case("windows")
+        || v.eq_ignore_ascii_case("system")
+    {
+        return Some(Some(BorderColor::Accent));
     }
     let hex = v.strip_prefix('#').unwrap_or(v);
     if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
@@ -453,13 +507,22 @@ fn parse_color(v: &str) -> Option<Option<u32>> {
     }
     let n = u32::from_str_radix(hex, 16).ok()?;
     let (r, g, b) = ((n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF);
-    Some(Some(r | (g << 8) | (b << 16)))
+    Some(Some(BorderColor::Custom(r | (g << 8) | (b << 16))))
 }
 
-fn color_setting(value: &str, target: &mut u32, name: &str, n: usize, warnings: &mut Vec<String>) {
+fn color_setting(
+    value: &str,
+    target: &mut u32,
+    default_val: u32,
+    name: &str,
+    n: usize,
+    warnings: &mut Vec<String>,
+) {
     match parse_color(value) {
-        Some(Some(c)) => *target = c,
-        _ => warnings.push(format!("line {n}: {name} must be #RRGGBB")),
+        Some(Some(BorderColor::Custom(c))) => *target = c,
+        Some(Some(BorderColor::Accent)) => *target = ACCENT_COLOR,
+        Some(None) => *target = default_val,
+        None => warnings.push(format!("line {n}: {name} must be #RRGGBB, accent, or off")),
     }
 }
 
@@ -576,9 +639,24 @@ pub fn label(
     }
 }
 
+pub fn canonical_config_path() -> PathBuf {
+    noren_sdk::paths::module_config_path("wm", "noren-wm.conf")
+}
+
+pub fn active_config_path() -> Option<PathBuf> {
+    find_file()
+}
+
 fn find_file() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("NOREN_CONFIG") {
-        return Some(PathBuf::from(p));
+        let trimmed = p.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    let canonical = canonical_config_path();
+    if canonical.exists() {
+        return Some(canonical);
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -595,6 +673,28 @@ fn find_file() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
         let p = PathBuf::from(dir).join("noren-wm").join("noren-wm.conf");
         if p.exists() {
+            return Some(p);
+        }
+    }
+    // Legacy vscroll-wm migration fallbacks
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("vscroll-wm.conf");
+            if p.exists() {
+                crate::log_info!("using legacy config path {}", p.display());
+                return Some(p);
+            }
+        }
+    }
+    let legacy_cwd = PathBuf::from("vscroll-wm.conf");
+    if legacy_cwd.exists() {
+        crate::log_info!("using legacy config path {}", legacy_cwd.display());
+        return Some(legacy_cwd);
+    }
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+        let p = PathBuf::from(dir).join("vscroll-wm").join("vscroll-wm.conf");
+        if p.exists() {
+            crate::log_info!("using legacy config path {}", p.display());
             return Some(p);
         }
     }
@@ -661,11 +761,16 @@ mod tests {
     fn empty_text_gives_defaults() {
         let (cfg, warnings) = Config::parse("");
         assert_eq!(cfg, Config::default());
+        assert!(cfg.osd_handoff);
         assert!(!cfg.workspace_osd_dots);
         assert!(warnings.is_empty());
-        let (cfg, w) = Config::parse("workspace_osd_dots = on\n");
+        let (cfg, w) = Config::parse("workspace_osd_dots = on\nosd_handoff = off\n");
         assert!(cfg.workspace_osd_dots);
+        assert!(!cfg.osd_handoff);
         assert!(w.is_empty());
+        let (cfg, w) = Config::parse("osd_handoff = maybe\n");
+        assert!(cfg.osd_handoff);
+        assert_eq!(w.len(), 1);
     }
 
     #[test]
@@ -673,26 +778,35 @@ mod tests {
         let (cfg, w) = Config::parse("# komentar\nGap = 24\nanim_ms=200\nfocus_border = #4FA8F5\n");
         assert_eq!(cfg.gap, 24);
         assert_eq!(cfg.anim_ms, Some(200.0));
-        assert_eq!(cfg.focus_border, Some(0x00F5_A84F)); // BGR for RGB #4FA8F5.
+        assert_eq!(cfg.focus_border, Some(BorderColor::Custom(0x00F5_A84F))); // BGR for RGB #4FA8F5.
         assert!(w.is_empty());
     }
 
     #[test]
-    fn focus_border_accepts_plain_hex_and_off() {
+    fn focus_border_accepts_plain_hex_accent_and_off() {
         let (a, _) = Config::parse("focus_border = FF0000");
-        assert_eq!(a.focus_border, Some(0x0000_00FF));
+        assert_eq!(a.focus_border, Some(BorderColor::Custom(0x0000_00FF)));
         let (b, _) = Config::parse("focus_border = #FF0000\nfocus_border = off");
         assert_eq!(b.focus_border, None);
+        let (c, w1) = Config::parse("focus_border = accent");
+        assert!(w1.is_empty());
+        assert_eq!(c.focus_border, Some(BorderColor::Accent));
+        let (d, w2) = Config::parse("focus_border = windows");
+        assert!(w2.is_empty());
+        assert_eq!(d.focus_border, Some(BorderColor::Accent));
     }
 
     #[test]
-    fn join_border_accepts_hex_and_off() {
+    fn join_border_accepts_hex_accent_and_off() {
         let (a, w) = Config::parse("join_border = #FFBE3C");
         assert!(w.is_empty());
-        assert_eq!(a.join_border, Some(0x003C_BEFF));
+        assert_eq!(a.join_border, Some(BorderColor::Custom(0x003C_BEFF)));
         let (b, w) = Config::parse("join_border = off");
         assert!(w.is_empty());
         assert_eq!(b.join_border, None);
+        let (c, w) = Config::parse("join_border = accent");
+        assert!(w.is_empty());
+        assert_eq!(c.join_border, Some(BorderColor::Accent));
     }
 
     #[test]
@@ -830,11 +944,13 @@ mod tests {
     #[test]
     fn overview_size_is_clamped_and_bad_colors_warn() {
         let (cfg, w) = Config::parse(
-            "overview_size = 5\noverview_color_box = biru\noverview_color_active = off\n",
+            "overview_size = 5\noverview_color_box = biru\noverview_color_active = off\noverview_color_selected = accent\n",
         );
         assert_eq!(cfg.overview_size, 30);
-        assert_eq!(w.len(), 2);
-        assert_eq!(cfg.overview_colors, OverviewColors::default());
+        assert_eq!(w.len(), 1);
+        assert_eq!(cfg.overview_colors.box_fill, OverviewColors::default().box_fill);
+        assert_eq!(cfg.overview_colors.active, OverviewColors::default().active);
+        assert_eq!(cfg.overview_colors.selected, ACCENT_COLOR);
     }
 
     #[test]

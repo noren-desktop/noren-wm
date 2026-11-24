@@ -76,10 +76,26 @@ impl Rules {
     }
 }
 
-/// NOREN_IGNORE environment variable, or a file next to the executable, or in the working directory.
+pub fn canonical_ignore_path() -> std::path::PathBuf {
+    noren_sdk::paths::module_config_path("wm", "noren-wm.ignore")
+}
+
+/// NOREN_IGNORE env var, canonical `%APPDATA%\Noren\wm\noren-wm.ignore`, beside exe, CWD,
+/// `%LOCALAPPDATA%\noren-wm`, or legacy `vscroll-wm.ignore` migration fallbacks.
+pub fn active_ignore_path() -> std::path::PathBuf {
+    ignore_path().into()
+}
+
 fn ignore_path() -> String {
     if let Ok(p) = std::env::var("NOREN_IGNORE") {
-        return p;
+        let trimmed = p.trim();
+        if !trimmed.is_empty() {
+            return p;
+        }
+    }
+    let canonical = canonical_ignore_path();
+    if canonical.exists() {
+        return canonical.to_string_lossy().into_owned();
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -100,7 +116,30 @@ fn ignore_path() -> String {
             return p.to_string_lossy().into_owned();
         }
     }
-    "noren-wm.ignore".into()
+    // Legacy vscroll-wm migration fallbacks
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("vscroll-wm.ignore");
+            if p.exists() {
+                crate::log_info!("using legacy ignore path {}", p.display());
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    if std::path::Path::new("vscroll-wm.ignore").exists() {
+        crate::log_info!("using legacy ignore path vscroll-wm.ignore");
+        return "vscroll-wm.ignore".into();
+    }
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+        let p = std::path::PathBuf::from(dir)
+            .join("vscroll-wm")
+            .join("vscroll-wm.ignore");
+        if p.exists() {
+            crate::log_info!("using legacy ignore path {}", p.display());
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    canonical.to_string_lossy().into_owned()
 }
 
 static IGNORE_RULES: RwLock<Option<Rules>> = RwLock::new(None);

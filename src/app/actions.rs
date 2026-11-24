@@ -13,7 +13,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::App;
-use crate::winutil::{ext_bounds, place, unmanaged_reason, wid, work_area};
+use crate::winutil::{ext_bounds, place, unmanaged_reason, wid};
 use crate::{bindings, cheatsheet, osd, rules, safety, taskbar, tray};
 
 /// Show config issues in a message box (release builds have no console).
@@ -107,6 +107,7 @@ impl App {
             self.parked.clear();
             self.leaving.clear();
             self.border_applied = None;
+            self.publish_workspace_state();
         } else {
             self.sync();
             self.apply();
@@ -207,7 +208,7 @@ impl App {
         self.hidden.remove(&id);
         self.actual.remove(&id);
         self.anim.remove(&id);
-        let work = work_area();
+        let work = self.effective_work_area();
         let cur = ext_bounds(h);
         let cw = (cur.right - cur.left).max(1);
         let ch = (cur.bottom - cur.top).max(1);

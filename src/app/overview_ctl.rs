@@ -14,7 +14,7 @@ use super::workspace::{slide_dir, Slide};
 use super::{App, OverviewSession};
 use crate::consts::{DIRS, EVENT_DEBOUNCE_MS};
 use crate::hook::{OV_MOVED, OV_OPEN};
-use crate::winutil::{title, wid, work_area};
+use crate::winutil::{title, wid};
 use crate::{config, overview, rules, safety};
 
 impl App {
@@ -124,13 +124,14 @@ impl App {
             active_ws: active,
         };
         let floating = self.overview_floating_list();
+        let work = self.effective_work_area();
         let mut draw = overview::build(
             &model,
             &titles,
             &sources,
             selected.map_or(0, |w| w.0),
             focused,
-            work_area(),
+            work,
             &self.overview_options(),
         );
         overview::attach_floating(&mut draw, &floating);
@@ -162,6 +163,8 @@ impl App {
     unsafe fn overview_select(&mut self, n: WindowId) {
         let opts = self.overview_options();
         let thumbs = self.cfg.overview_thumbnails;
+        let work = self.effective_work_area();
+        let floating = self.overview_floating_list();
         let Some(s) = self.overview.as_mut() else {
             return;
         };
@@ -188,10 +191,9 @@ impl App {
             &s.sources,
             n.0,
             s.focused,
-            work_area(),
+            work,
             &opts,
         );
-        let floating = self.overview_floating_list();
         overview::attach_floating(&mut draw, &floating);
         overview::show(draw, thumbs);
     }
@@ -359,6 +361,7 @@ impl App {
             let opts = self.overview_options();
             let thumbs = self.cfg.overview_thumbnails;
             let floating = self.overview_floating_list();
+            let work = self.effective_work_area();
             let Some(s) = self.overview.as_mut() else {
                 return;
             };
@@ -371,7 +374,7 @@ impl App {
                 &s.sources,
                 0,
                 s.focused,
-                work_area(),
+                work,
                 &opts,
             );
             overview::attach_floating(&mut draw, &floating);
@@ -386,6 +389,7 @@ impl App {
         let thumbs = self.cfg.overview_thumbnails;
         let frac = overview::current_scroll_frac();
         let floating = self.overview_floating_list();
+        let work = self.effective_work_area();
         let Some(s) = self.overview.as_ref() else {
             return;
         };
@@ -395,7 +399,7 @@ impl App {
             &s.sources,
             s.selected.map_or(0, |w| w.0),
             s.focused,
-            work_area(),
+            work,
             &opts,
         );
         overview::attach_floating(&mut draw, &floating);
@@ -468,6 +472,7 @@ impl App {
             .unwrap_or(0);
         let (first, visible) = overview::window_for(maps.len(), col);
         let floating = self.overview_floating_list();
+        let work = self.effective_work_area();
         let Some(s) = self.overview.as_mut() else {
             return;
         };
@@ -485,7 +490,7 @@ impl App {
             &s.sources,
             selected.0,
             s.focused,
-            work_area(),
+            work,
             &opts,
         );
         overview::attach_floating(&mut draw, &floating);
