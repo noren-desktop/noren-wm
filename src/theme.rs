@@ -38,6 +38,8 @@ use crate::config::{rgb, OverviewColors};
 
 static GDIPLUS_TOKEN: AtomicUsize = AtomicUsize::new(0);
 static HAS_SEGOE_VAR: AtomicBool = AtomicBool::new(false);
+static HAS_SEGOE_VAR_SEMIBOLD: AtomicBool = AtomicBool::new(false);
+static HAS_SEGOE_VAR_SMALL: AtomicBool = AtomicBool::new(false);
 
 /// Initialize GDI+, check for the `Segoe UI Variable` font, and enable automatic
 /// dark/light theming for Win32 popup menus (`TrackPopupMenu`). Call once from `main`.
@@ -51,6 +53,11 @@ pub unsafe fn init() {
         GDIPLUS_TOKEN.store(token, Ordering::Relaxed);
     }
     HAS_SEGOE_VAR.store(font_exists("Segoe UI Variable Text"), Ordering::Relaxed);
+    HAS_SEGOE_VAR_SEMIBOLD.store(
+        font_exists("Segoe UI Variable Text Semibold"),
+        Ordering::Relaxed,
+    );
+    HAS_SEGOE_VAR_SMALL.store(font_exists("Segoe UI Variable Small"), Ordering::Relaxed);
     enable_native_dark_menus();
 }
 
@@ -114,7 +121,8 @@ unsafe fn font_exists(name: &str) -> bool {
 }
 
 /// Create native Windows 11 fonts (`Segoe UI Variable Display` for large headings,
-/// `Segoe UI Variable Text` for regular text; automatically falls back to `Segoe UI` on Windows 10).
+/// `Segoe UI Variable Text Semibold` for semibold UI text, `Segoe UI Variable Small`
+/// for small captions, `Segoe UI Variable Text` for regular text; falls back to `Segoe UI` on Windows 10).
 pub unsafe fn create_font(height: i32, weight: i32) -> HFONT {
     let mut lf: LOGFONTW = std::mem::zeroed();
     lf.lfHeight = height;
@@ -124,6 +132,16 @@ pub unsafe fn create_font(height: i32, weight: i32) -> HFONT {
     let face = if HAS_SEGOE_VAR.load(Ordering::Relaxed) {
         if height.abs() >= 24 {
             "Segoe UI Variable Display"
+        } else if weight >= 600
+            && weight < 700
+            && HAS_SEGOE_VAR_SEMIBOLD.load(Ordering::Relaxed)
+        {
+            "Segoe UI Variable Text Semibold"
+        } else if height.abs() <= 12
+            && weight < 600
+            && HAS_SEGOE_VAR_SMALL.load(Ordering::Relaxed)
+        {
+            "Segoe UI Variable Small"
         } else {
             "Segoe UI Variable Text"
         }
@@ -219,6 +237,10 @@ pub struct Palette {
     pub stroke: u32,
     /// Stronger border for active controls / keycaps.
     pub stroke_strong: u32,
+    /// Thin outer DWM border for standard panels.
+    pub border: u32,
+    /// Ultra-thin hairline DWM border for compact flyouts like Workspace OSD.
+    pub border_subtle: u32,
     /// Thin divider.
     pub divider: u32,
     /// Primary text.
@@ -320,19 +342,29 @@ impl Palette {
             mix(surface, rgb(0, 0, 0), 7)
         };
         let stroke = if eff_dark {
-            mix(surface, rgb(255, 255, 255), 16)
+            mix(surface, rgb(255, 255, 255), 10)
         } else {
-            mix(surface, rgb(0, 0, 0), 14)
+            mix(surface, rgb(0, 0, 0), 9)
         };
         let stroke_strong = if eff_dark {
             mix(surface, rgb(255, 255, 255), 26)
         } else {
             mix(surface, rgb(0, 0, 0), 22)
         };
-        let divider = if eff_dark {
-            mix(surface, rgb(255, 255, 255), 10)
+        let border = if eff_dark {
+            mix(surface, rgb(255, 255, 255), 8)
         } else {
-            mix(surface, rgb(0, 0, 0), 10)
+            mix(surface, rgb(0, 0, 0), 8)
+        };
+        let border_subtle = if eff_dark {
+            mix(surface, rgb(255, 255, 255), 5)
+        } else {
+            mix(surface, rgb(0, 0, 0), 5)
+        };
+        let divider = if eff_dark {
+            mix(surface, rgb(255, 255, 255), 8)
+        } else {
+            mix(surface, rgb(0, 0, 0), 8)
         };
         let text = if eff_dark {
             rgb(255, 255, 255)
@@ -359,6 +391,8 @@ impl Palette {
             control,
             stroke,
             stroke_strong,
+            border,
+            border_subtle,
             divider,
             text,
             text_secondary,
@@ -370,10 +404,7 @@ impl Palette {
     }
 }
 
-/// Apply native Windows 11 DWM chrome: rounded corners (`DWMWCP_ROUND`), DWM dark
-/// mode, and a subtle 1px border.
-pub unsafe fn apply_window_chrome(hwnd: HWND, pal: &Palette, small_corners: bool) {
-    let corner: u32 = if small_corners { 3 } else { 2 }; // DWMWCP_ROUNDSMALL / DWMWCP_ROUND
+unsafe fn apply_dwm_chrome(hwnd: HWND, pal: &Palette, corner: u32, border: u32) {
     let _ = DwmSetWindowAttribute(
         hwnd,
         DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -387,13 +418,25 @@ pub unsafe fn apply_window_chrome(hwnd: HWND, pal: &Palette, small_corners: bool
         &dark as *const u32 as *const c_void,
         4,
     );
-    let border: u32 = pal.stroke;
     let _ = DwmSetWindowAttribute(
         hwnd,
         DWMWA_BORDER_COLOR,
         &border as *const u32 as *const c_void,
         4,
     );
+}
+
+/// Apply native Windows 11 DWM chrome: rounded corners (`DWMWCP_ROUND`), DWM dark
+/// mode, and a subtle 1px border.
+pub unsafe fn apply_window_chrome(hwnd: HWND, pal: &Palette, small_corners: bool) {
+    let corner: u32 = if small_corners { 3 } else { 2 }; // DWMWCP_ROUNDSMALL / DWMWCP_ROUND
+    apply_dwm_chrome(hwnd, pal, corner, pal.border);
+}
+
+/// Apply compact Windows 11 flyout chrome with rounded corners, dark mode,
+/// and an ultra-thin hairline DWM border.
+pub unsafe fn apply_flyout_chrome(hwnd: HWND, pal: &Palette) {
+    apply_dwm_chrome(hwnd, pal, 2, pal.border_subtle);
 }
 
 // ---------------------------------------------------------------- Fluent animation

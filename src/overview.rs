@@ -859,18 +859,18 @@ impl Draw {
     }
 }
 
-const MARGIN: i32 = 5;
-const LABEL_BAND: i32 = 30;
-const PAD: i32 = 22;
-const HINT_H: i32 = 36;
-const DOCK_H: i32 = 116;
-const DOCK_CARD_W: i32 = 150;
-const DOCK_CARD_H: i32 = 90;
-const DOCK_LABEL_H: i32 = 22;
-const DOCK_GAP: i32 = 14;
+const MARGIN: i32 = 8;
+const LABEL_BAND: i32 = 34;
+const PAD: i32 = 30;
+const HINT_H: i32 = 40;
+const DOCK_H: i32 = 120;
+const DOCK_CARD_W: i32 = 158;
+const DOCK_CARD_H: i32 = 96;
+const DOCK_LABEL_H: i32 = 24;
+const DOCK_GAP: i32 = 18;
 const SCROLLBAR_GUTTER: i32 = 14;
-const MINIMAP_GAP: i32 = 16;
-const MINIMAP_PAD: i32 = 10;
+const MINIMAP_GAP: i32 = 22;
+const MINIMAP_PAD: i32 = 14;
 /// Minimum panel width so hint text is not clipped.
 const MIN_PANEL_W_WITH_HINT: i32 = 460;
 const MIN_PANEL_W_WITH_HINT_WS: i32 = 600;
@@ -996,7 +996,7 @@ pub fn build(
         // Stage scale is based on one screen (viewport) size multiplied by the
         // user's zoom factor (Ctrl+Wheel / +/-/0).
         let avail_w = (stage_w - SCROLLBAR_GUTTER).max(40) as f32;
-        let base_scale = ((avail_w * 0.82) / sw).min(stage_h as f32 / (vh * 1.38));
+        let base_scale = ((avail_w * 0.78) / sw).min(stage_h as f32 / (vh * 1.44));
         let zoom = stage_zoom();
         let scale = (base_scale * zoom).min(avail_w / sw);
         let sc = |v: i32| (v as f32 * scale).round() as i32;
@@ -1088,17 +1088,17 @@ pub fn build(
                 .items
                 .iter()
                 .map(|it| {
-                    let l = mx0 + msc(it.rect.x) + 2;
-                    let t = my0 + msc(it.rect.y) + 2;
-                    let r = mx0 + msc(it.rect.x + it.rect.w) - 2;
-                    let b = my0 + msc(it.rect.y + it.rect.h) - 2;
+                    let l = mx0 + msc(it.rect.x) + 3;
+                    let t = my0 + msc(it.rect.y) + 3;
+                    let r = mx0 + msc(it.rect.x + it.rect.w) - 3;
+                    let b = my0 + msc(it.rect.y + it.rect.h) - 3;
                     MinimapItem {
                         id: it.id.0,
                         rect: RECT {
                             left: l,
                             top: t,
-                            right: r.max(l + 3),
-                            bottom: b.max(t + 3),
+                            right: r.max(l + 4),
+                            bottom: b.max(t + 4),
                         },
                         title: titles.get(&it.id.0).cloned().unwrap_or_default(),
                         source: sources.get(&it.id.0).copied().unwrap_or(0),
@@ -1138,7 +1138,7 @@ pub fn build(
             let card_w = ((avail_dock_w - (count - 1) * DOCK_GAP) / count).clamp(72, DOCK_CARD_W);
             let total_w = count * card_w + (count - 1) * DOCK_GAP;
             let mut dx = (panel_w - total_w) / 2;
-            let dy = stage.bottom + 16;
+            let dy = stage.bottom + 24;
 
             for i in start..end {
                 let (ws, ov) = &model.maps[i];
@@ -1149,9 +1149,9 @@ pub fn build(
                     bottom: dy + DOCK_CARD_H,
                 };
                 let preview = RECT {
-                    left: rect.left + 8,
-                    top: rect.top + 8,
-                    right: rect.right - 8,
+                    left: rect.left + 10,
+                    top: rect.top + 10,
+                    right: rect.right - 10,
                     bottom: rect.bottom - DOCK_LABEL_H - 4,
                 };
                 let pw = (preview.right - preview.left).max(1) as f32;
@@ -1216,12 +1216,12 @@ pub fn attach_floating(d: &mut Draw, list: &[(u64, String, bool)]) {
     if list.is_empty() {
         return;
     }
-    const FLOAT_BAR_H: i32 = 34;
+    const FLOAT_BAR_H: i32 = 38;
     const PILL_H: i32 = 26;
-    const PILL_GAP: i32 = 8;
+    const PILL_GAP: i32 = 10;
     const PREFIX_W: i32 = 72;
 
-    let shift = FLOAT_BAR_H + 4;
+    let shift = FLOAT_BAR_H + 8;
     d.stage.bottom = (d.stage.bottom - shift).max(d.stage.top + 60);
     if let Some(ref mut mm) = d.minimap {
         mm.rect.bottom = (mm.rect.bottom - shift).max(mm.rect.top + 40);
@@ -1237,7 +1237,7 @@ pub fn attach_floating(d: &mut Draw, list: &[(u64, String, bool)]) {
         }
     }
 
-    let hint_h = if d.hint { HINT_H } else { 4 };
+    let hint_h = if d.hint { HINT_H } else { 12 };
     let bar_top = d.panel.h - hint_h - FLOAT_BAR_H;
     let avail_w = (d.panel.w - 2 * PAD - PREFIX_W).max(80);
     let n = list.len() as i32;
@@ -1294,10 +1294,10 @@ fn clipped_thumb_rects(
 ) -> Option<(RECT, RECT)> {
     let r = shift_y(item_rect, -scroll_y);
     let area = RECT {
-        left: r.left + 8,
-        top: r.top + 8,
-        right: r.right - 8,
-        bottom: r.bottom - 4 - LABEL_BAND,
+        left: r.left + 12,
+        top: r.top + 12,
+        right: r.right - 12,
+        bottom: r.bottom - 10 - LABEL_BAND,
     };
     if area.right - area.left < 40 || area.bottom - area.top < 30 {
         return None;
@@ -1335,13 +1335,13 @@ unsafe fn register_thumbs(dest: HWND, draw: &mut Draw, init_opacity: u8) -> Vec<
             continue;
         }
         let inner = RECT {
-            left: it.rect.left + 4,
-            top: it.rect.top + 4,
-            right: it.rect.right - 4,
-            bottom: it.rect.bottom - 4,
+            left: it.rect.left + 6,
+            top: it.rect.top + 6,
+            right: it.rect.right - 6,
+            bottom: it.rect.bottom - 6,
         };
-        let area_w = (inner.right - 4) - (inner.left + 4);
-        let area_h = (inner.bottom - LABEL_BAND) - (inner.top + 4);
+        let area_w = (inner.right - 6) - (inner.left + 6);
+        let area_h = (inner.bottom - LABEL_BAND - 4) - (inner.top + 6);
         if area_w < 40 || area_h < 30 {
             continue;
         }
@@ -1522,17 +1522,17 @@ unsafe fn paint(hwnd: HWND) {
                 };
                 canvas.fill_round_rect(r, 8.0, card_fill, 255);
                 if selected {
-                    canvas.stroke_round_rect(r, 8.0, pal.selected, 255, 2.5);
+                    canvas.stroke_round_rect(r, 8.0, pal.selected, 255, 1.75);
                 } else {
-                    canvas.stroke_round_rect(r, 8.0, pal.stroke, 220, 1.0);
+                    canvas.stroke_round_rect(r, 8.0, pal.stroke, 190, 1.0);
                 }
 
                 if !it.title.is_empty() || it.icon != 0 {
                     let inner = RECT {
-                        left: r.left + 4,
-                        top: r.top + 4,
-                        right: (r.right - 4).max(r.left + 5),
-                        bottom: (r.bottom - 4).max(r.top + 5),
+                        left: r.left + 6,
+                        top: r.top + 6,
+                        right: (r.right - 6).max(r.left + 7),
+                        bottom: (r.bottom - 6).max(r.top + 7),
                     };
                     match it.label_band {
                         Some(band) => {
@@ -1543,13 +1543,13 @@ unsafe fn paint(hwnd: HWND) {
                                 let isz = (bh - 8).clamp(12, 16);
                                 let text_w = measure_text_w(canvas.hdc(), font, &it.title);
                                 if !it.title.is_empty() && bw >= isz + 36 {
-                                    let ix = b.left + 8;
+                                    let ix = b.left + 10;
                                     let iy = b.top + (bh - isz) / 2;
                                     draw_icon(canvas.hdc(), it.icon, ix, iy, isz);
                                     let tr = RECT {
-                                        left: ix + isz + 6,
+                                        left: ix + isz + 8,
                                         top: b.top,
-                                        right: (b.right - 8).max(ix + isz + 7),
+                                        right: (b.right - 10).max(ix + isz + 9),
                                         bottom: b.bottom,
                                     };
                                     let _ = text_w;
@@ -1575,9 +1575,9 @@ unsafe fn paint(hwnd: HWND) {
                                 }
                             } else {
                                 let tr = RECT {
-                                    left: b.left + 8,
+                                    left: b.left + 10,
                                     top: b.top,
-                                    right: (b.right - 8).max(b.left + 9),
+                                    right: (b.right - 10).max(b.left + 11),
                                     bottom: b.bottom,
                                 };
                                 canvas.draw_text(
@@ -1671,7 +1671,7 @@ unsafe fn paint(hwnd: HWND) {
                         10.0,
                         if empty_drop { pal.selected } else { pal.stroke },
                         230,
-                        if empty_drop { 2.5 } else { 1.5 },
+                        if empty_drop { 1.75 } else { 1.0 },
                     );
                     let msg = if empty_drop {
                         "Drop window here"
@@ -1686,7 +1686,7 @@ unsafe fn paint(hwnd: HWND) {
                         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
                     );
                 } else {
-                    canvas.stroke_round_rect(v, 8.0, pal.view, 220, 2.0);
+                    canvas.stroke_round_rect(v, 8.0, pal.view, 190, 1.25);
                 }
             }
 
@@ -1697,7 +1697,7 @@ unsafe fn paint(hwnd: HWND) {
                     match sl.kind {
                         SlotKind::Beside(_) | SlotKind::Split(..) => {
                             canvas.fill_round_rect(m, 8.0, pal.selected, 95);
-                            canvas.stroke_round_rect(m, 8.0, pal.selected, 255, 2.5);
+                            canvas.stroke_round_rect(m, 8.0, pal.selected, 255, 1.75);
                         }
                         SlotKind::Before(_) | SlotKind::After(_) => {
                             canvas.fill_round_rect(m, 3.0, pal.selected, 255);
@@ -1748,7 +1748,7 @@ unsafe fn paint(hwnd: HWND) {
             // 1b. Full 100% strip minimap on the right of the stage (map of all window positions).
             if let Some(mm) = d.minimap.as_ref() {
                 canvas.fill_round_rect(mm.rect, 10.0, pal.layer, 255);
-                canvas.stroke_round_rect(mm.rect, 10.0, pal.stroke, 220, 1.0);
+                canvas.stroke_round_rect(mm.rect, 10.0, pal.stroke, 190, 1.0);
 
                 // Transparent slider marking the area currently visible in the large stage.
                 if d.max_scroll > 0 {
@@ -1776,9 +1776,9 @@ unsafe fn paint(hwnd: HWND) {
                     };
                     canvas.fill_round_rect(it.rect, 4.0, fill, 255);
                     if sel {
-                        canvas.stroke_round_rect(it.rect, 4.0, pal.selected, 255, 1.8);
+                        canvas.stroke_round_rect(it.rect, 4.0, pal.selected, 255, 1.4);
                     } else {
-                        canvas.stroke_round_rect(it.rect, 4.0, pal.stroke, 200, 1.0);
+                        canvas.stroke_round_rect(it.rect, 4.0, pal.stroke, 175, 1.0);
                     }
                     let ih = it.rect.bottom - it.rect.top;
                     let iw = it.rect.right - it.rect.left;
@@ -1841,18 +1841,18 @@ unsafe fn paint(hwnd: HWND) {
                 }
 
                 // `view` frame (active desktop screen area) over the minimap.
-                canvas.stroke_round_rect(mm.view_rect, 4.0, pal.view, 220, 1.5);
+                canvas.stroke_round_rect(mm.view_rect, 4.0, pal.view, 190, 1.2);
             }
 
             // 2. Workspace card bar at the bottom (Windows 11 Task View style).
             if d.multi {
                 let sep = RECT {
                     left: PAD,
-                    top: d.stage.bottom + 7,
+                    top: d.stage.bottom + 11,
                     right: client.right - PAD,
-                    bottom: d.stage.bottom + 8,
+                    bottom: d.stage.bottom + 12,
                 };
-                canvas.fill_rect(sep, pal.divider, 255);
+                canvas.fill_rect(sep, pal.divider, 200);
 
                 for card in &d.dock {
                     let drop_hi = drop_slot.map_or(false, |sl| {
@@ -1867,9 +1867,9 @@ unsafe fn paint(hwnd: HWND) {
                     };
                     canvas.fill_round_rect(card.rect, 8.0, fill, 255);
                     if drop_hi || card.current {
-                        canvas.stroke_round_rect(card.rect, 8.0, pal.selected, 255, 2.0);
+                        canvas.stroke_round_rect(card.rect, 8.0, pal.selected, 255, 1.5);
                     } else {
-                        canvas.stroke_round_rect(card.rect, 8.0, pal.stroke, 220, 1.0);
+                        canvas.stroke_round_rect(card.rect, 8.0, pal.stroke, 190, 1.0);
                     }
 
                     // Wireframe window miniature inside the workspace card (empty = leave it plain).
@@ -1889,10 +1889,10 @@ unsafe fn paint(hwnd: HWND) {
 
                     let label = format!("Workspace {}", card.number);
                     let lr = RECT {
-                        left: card.rect.left + 6,
-                        top: card.rect.bottom - DOCK_LABEL_H - 2,
-                        right: card.rect.right - 6,
-                        bottom: card.rect.bottom - 2,
+                        left: card.rect.left + 8,
+                        top: card.rect.bottom - DOCK_LABEL_H - 3,
+                        right: card.rect.right - 8,
+                        bottom: card.rect.bottom - 3,
                     };
                     canvas.draw_text(
                         &label,
@@ -1927,9 +1927,9 @@ unsafe fn paint(hwnd: HWND) {
                 for pill in &d.floating {
                     canvas.fill_round_rect(pill.rect, 6.0, pal.layer, 255);
                     if pill.sticky {
-                        canvas.stroke_round_rect(pill.rect, 6.0, pal.accent, 255, 1.5);
+                        canvas.stroke_round_rect(pill.rect, 6.0, pal.accent, 255, 1.25);
                     } else {
-                        canvas.stroke_round_rect(pill.rect, 6.0, pal.stroke, 220, 1.0);
+                        canvas.stroke_round_rect(pill.rect, 6.0, pal.stroke, 190, 1.0);
                     }
                     let text = if pill.sticky {
                         format!("★ {}", pill.label)
@@ -1963,7 +1963,7 @@ unsafe fn paint(hwnd: HWND) {
                     left: client.left,
                     top: client.bottom - HINT_H,
                     right: client.right,
-                    bottom: client.bottom - 4,
+                    bottom: client.bottom - 8,
                 };
                 canvas.draw_text(
                     hint_text,

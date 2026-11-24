@@ -36,15 +36,15 @@ const HOLD_TIMER_ID: usize = 1;
 const ANIM_TIMER_ID: usize = 2;
 const ANIM_TICK_MS: u32 = 16;
 
-const PANEL_H_DOTS: i32 = 82;
-const PANEL_H_COMPACT: i32 = 54;
+const PANEL_H_DOTS: i32 = 96;
+const PANEL_H_COMPACT: i32 = 66;
 /// Panel distance from the bottom edge of the work area (pixels).
 const BOTTOM_MARGIN: i32 = 44;
-const MIN_PANEL_W: i32 = 224;
-const COMPACT_PANEL_W: i32 = 196;
+const MIN_PANEL_W: i32 = 252;
+const COMPACT_PANEL_W: i32 = 228;
 const PILL: i32 = 22;
 const DOT: i32 = 7;
-const PILL_GAP: i32 = 10;
+const PILL_GAP: i32 = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -74,7 +74,7 @@ static STATE: Mutex<Option<OsdState>> = Mutex::new(None);
 /// Panel width for `total` workspaces.
 pub fn panel_width(total: usize) -> i32 {
     let row = total as i32 * (PILL + PILL_GAP);
-    (row + 56).max(MIN_PANEL_W)
+    (row + 72).max(MIN_PANEL_W)
 }
 
 unsafe fn paint(hwnd: HWND) {
@@ -96,16 +96,16 @@ unsafe fn paint(hwnd: HWND) {
         let label = format!("Workspace {}", active + 1);
         let title_r = if show_dots {
             RECT {
-                left: 12,
-                top: 12,
-                right: client.right - 12,
-                bottom: 46,
+                left: 20,
+                top: 16,
+                right: client.right - 20,
+                bottom: 52,
             }
         } else {
             RECT {
-                left: 12,
+                left: 20,
                 top: 0,
-                right: client.right - 12,
+                right: client.right - 20,
                 bottom: client.bottom,
             }
         };
@@ -126,7 +126,7 @@ unsafe fn paint(hwnd: HWND) {
                 0
             };
             let mut x = (client.right - row_w) / 2;
-            let cy = 58;
+            let cy = 70;
             for i in 0..n {
                 if i as usize == active {
                     let r = RECT {
@@ -283,8 +283,8 @@ pub unsafe fn init() -> bool {
     OSD_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
 
     let pal = Palette::resolve(OverviewColors::default());
-    theme::apply_window_chrome(hwnd, &pal, false);
-    FONT.store(theme::create_font(-22, 600).0 as isize, Ordering::Relaxed);
+    theme::apply_flyout_chrome(hwnd, &pal);
+    FONT.store(theme::create_font(-20, 400).0 as isize, Ordering::Relaxed);
     true
 }
 
@@ -324,7 +324,7 @@ pub unsafe fn notify(
     };
 
     let pal = Palette::resolve(colors);
-    theme::apply_window_chrome(h, &pal, false);
+    theme::apply_flyout_chrome(h, &pal);
 
     let anim = animations_enabled();
     let (init_alpha, init_y, start_anim) = if let Ok(mut g) = STATE.lock() {
