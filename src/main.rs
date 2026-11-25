@@ -203,8 +203,8 @@ fn main() {
             log_warn!("failed to register Ctrl+Alt+Space (in use by another app?)");
             failed_hotkeys.push("Ctrl+Alt+Space".into());
         }
-        if !tray::create(GetCurrentThreadId()) {
-            log_warn!("failed to create tray icon");
+        if !tray::create_session_watcher(GetCurrentThreadId()) {
+            log_warn!("failed to create session watcher window");
         }
         let mut kb_hook_status = String::from("ok");
         let hook = match KeyboardHookThread::spawn() {
@@ -281,6 +281,10 @@ fn main() {
                 None
             }
         };
+        tray::start_tray_service(
+            GetCurrentThreadId(),
+            app.nip.as_ref().map(|rt| rt.node()),
+        );
 
         app::show_config_problems(&report); // Show config typos immediately.
         let mut restart_elevated = false;

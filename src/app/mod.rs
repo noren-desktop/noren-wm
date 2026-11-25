@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use layout::{Rect, WindowId, Workspaces};
-use noren_sdk::protocol::CAP_LAYOUT_RESERVED_AREA;
+use noren_sdk::protocol::{CAP_LAYOUT_RESERVED_AREA, CAP_TRAY_ACTIONS};
 use noren_sdk::schema::FieldValue;
 use noren_sdk::storage::{load_kv_file, save_kv_preserving_comments};
 use noren_sdk::NipEvent;
@@ -636,11 +636,13 @@ impl App {
             match ev {
                 NipEvent::PeerConnected(_) => {
                     self.publish_workspace_state();
+                    crate::tray::notify_topology_changed();
                 }
                 NipEvent::PeerDisconnected { module, .. } => {
                     if self.reserved.remove_peer(&module) {
                         need_reapply = true;
                     }
+                    crate::tray::notify_topology_changed();
                 }
                 NipEvent::StateReceived {
                     from, cap, data, ..
@@ -650,6 +652,8 @@ impl App {
                         if self.reserved.set_peer(&from, area) {
                             need_reapply = true;
                         }
+                    } else if cap == CAP_TRAY_ACTIONS {
+                        crate::tray::notify_topology_changed();
                     }
                 }
                 NipEvent::ThemeChanged(theme) => {
@@ -657,11 +661,19 @@ impl App {
                     self.refresh_border();
                 }
                 NipEvent::Command {
-                    name, data, reply, ..
+                    from,
+                    name,
+                    data,
+                    reply,
+                    ..
                 } => {
-                    self.handle_nip_command(&name, data, reply);
+                    self.handle_nip_command(&from, &name, data, reply);
                 }
-                NipEvent::EventReceived { .. } => {}
+                NipEvent::EventReceived { name, .. } => {
+                    if name == "tray.released" {
+                        crate::tray::notify_topology_changed();
+                    }
+                }
             }
         }
 
@@ -672,6 +684,7 @@ impl App {
 
     unsafe fn handle_nip_command(
         &mut self,
+        from: &str,
         name: &str,
         data: Value,
         reply: noren_sdk::ReplyHandle,
@@ -683,6 +696,79 @@ impl App {
                     "module": "wm",
                     "elevated": crate::log::is_elevated(),
                 }));
+            }
+            "tray.invoke" => {
+                let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                match id {
+                    "pause" => {
+                        self.toggle_pause();
+                        let _ = reply.ok(json!({
+                            "paused": crate::tray::PAUSED.load(Ordering::Relaxed)
+                        }));
+                    }
+                    "reload" => {
+                        self.reload_config();
+                        let _ = reply.ok(json!({ "reloaded": true }));
+                    }
+                    "cheatsheet" => {
+                        if !crate::tray::PAUSED.load(Ordering::Relaxed) {
+                            cheatsheet::toggle(self.effective_work_area(), &self.cfg);
+                        }
+                        let _ = reply.ok(json!({ "toggled": true }));
+                    }
+                    "logs" => {
+                        crate::log::open_log_folder();
+                        let _ = reply.ok(json!({ "opened": true }));
+                    }
+                    "elevate" => {
+                        let tid = crate::hook::MAIN_THREAD.load(Ordering::Relaxed);
+                        if tid != 0 {
+                            let _ = PostThreadMessageW(
+                                tid,
+                                crate::tray::WM_TRAY_ELEVATE,
+                                windows::Win32::Foundation::WPARAM(0),
+                                LPARAM(0),
+                            );
+                        }
+                        let _ = reply.ok(json!({ "elevating": true }));
+                    }
+                    "autostart" => {
+                        let next = !crate::tray::autostart_enabled();
+                        let ok = crate::tray::set_autostart(next);
+                        crate::tray::sync_state();
+                        let _ = reply.ok(json!({ "autostart": next, "ok": ok }));
+                    }
+                    other => {
+                        let _ = reply.err(format!("unsupported wm tray item '{other}'"));
+                    }
+                }
+            }
+            "tray.quit" => {
+                let _ = reply.ok(json!({ "quitting": true }));
+                let tid = crate::hook::MAIN_THREAD.load(Ordering::Relaxed);
+                if tid != 0 {
+                    let _ = PostThreadMessageW(
+                        tid,
+                        crate::safety::WM_QUIT_REQUEST,
+                        windows::Win32::Foundation::WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
+            "tray.yield" => {
+                let peer_elevated = self
+                    .nip
+                    .as_ref()
+                    .and_then(|rt| {
+                        rt.node()
+                            .peers()
+                            .into_iter()
+                            .find(|p| p.module == from)
+                            .map(|p| p.elevated)
+                    })
+                    .unwrap_or(false);
+                let yielded = crate::tray::request_yield(peer_elevated);
+                let _ = reply.ok(json!({ "yielded": yielded }));
             }
             "overview" => {
                 if !crate::tray::PAUSED.load(Ordering::Relaxed) {

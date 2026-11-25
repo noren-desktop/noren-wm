@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use layout::Rect;
 use noren_sdk::protocol::{
     CAP_LAUNCHER_ACTIONS, CAP_LAYOUT_RESERVED_AREA, CAP_OSD_WORKSPACE, CAP_SETTINGS_SCHEMA,
-    CAP_WORKSPACE_STATE,
+    CAP_TRAY_ACTIONS, CAP_WORKSPACE_STATE,
 };
 use noren_sdk::schema::{
     AdvancedEditor, ConfigFormat, FieldDef, FieldGroup, FieldKind, ModuleManifest,
@@ -40,6 +40,9 @@ pub const ALLOWED_COMMANDS: &[&str] = &[
     "open_rules_editor",
     "open_bindings_editor",
     "open_snap_presets_editor",
+    "tray.invoke",
+    "tray.quit",
+    "tray.yield",
 ];
 
 fn field_bool(key: &str, label: &str, default_val: bool, description: Option<&str>) -> FieldDef {
@@ -509,6 +512,10 @@ fn wm_node_config(manifest: &ModuleManifest, initial_ws_state: Value) -> NodeCon
         CAP_SETTINGS_SCHEMA.to_string(),
         serde_json::to_value(manifest).unwrap_or(Value::Null),
     );
+    initial_state.insert(
+        CAP_TRAY_ACTIONS.to_string(),
+        serde_json::to_value(crate::tray::build_wm_tray_payload()).unwrap_or(Value::Null),
+    );
 
     NodeConfig {
         module: "wm".to_string(),
@@ -517,10 +524,12 @@ fn wm_node_config(manifest: &ModuleManifest, initial_ws_state: Value) -> NodeCon
             CAP_WORKSPACE_STATE.to_string(),
             CAP_LAUNCHER_ACTIONS.to_string(),
             CAP_SETTINGS_SCHEMA.to_string(),
+            CAP_TRAY_ACTIONS.to_string(),
         ],
         wants: vec![
             CAP_LAYOUT_RESERVED_AREA.to_string(),
             CAP_OSD_WORKSPACE.to_string(),
+            CAP_TRAY_ACTIONS.to_string(),
         ],
         allowlist: Some(
             ALLOWED_COMMANDS
@@ -534,7 +543,7 @@ fn wm_node_config(manifest: &ModuleManifest, initial_ws_state: Value) -> NodeCon
 
 /// Active NIP runtime owned by the WM process and bridged to the Win32 main loop.
 pub struct NipRuntime {
-    node: NipNode,
+    node: Arc<NipNode>,
     manifest: ModuleManifest,
     queue: Arc<Mutex<VecDeque<NipEvent>>>,
     stop: Arc<AtomicBool>,
@@ -551,6 +560,7 @@ impl NipRuntime {
 
         let cfg = wm_node_config(&manifest, initial_ws_state.clone());
         let (node, rx) = NipNode::start(cfg)?;
+        let node = Arc::new(node);
 
         let queue = Arc::new(Mutex::new(VecDeque::new()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -639,6 +649,10 @@ impl NipRuntime {
         &self.manifest
     }
 
+    pub fn node(&self) -> Arc<NipNode> {
+        Arc::clone(&self.node)
+    }
+
     pub fn shutdown(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.node.shutdown();
@@ -675,6 +689,7 @@ pub fn run_nip_self_test() -> Result<(), String> {
         fn drop(&mut self) {
             std::env::remove_var("NOREN_CONFIG_DIR");
             std::env::remove_var("NOREN_PIPE_PREFIX");
+            std::env::remove_var("NOREN_TRAY_HEADLESS");
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
@@ -688,6 +703,7 @@ pub fn run_nip_self_test() -> Result<(), String> {
     let prefix = format!("noren_wm_test_{pid}.");
     std::env::set_var("NOREN_CONFIG_DIR", &dir);
     std::env::set_var("NOREN_PIPE_PREFIX", &prefix);
+    std::env::set_var("NOREN_TRAY_HEADLESS", "1");
 
     let manifest = build_wm_manifest();
     install_manifest(&manifest).map_err(|e| format!("install_manifest failed: {e}"))?;
@@ -705,13 +721,31 @@ pub fn run_nip_self_test() -> Result<(), String> {
     });
     let (wm_node, wm_rx) = NipNode::start(wm_node_config(&manifest, initial_ws))
         .map_err(|e| format!("wm NipNode start failed: {e}"))?;
+    let wm_node = Arc::new(wm_node);
 
+    let tb_tray_payload = noren_sdk::tray::TrayModulePayload {
+        module: "testbed".to_string(),
+        title: "Testbed".to_string(),
+        paused: false,
+        items: vec![noren_sdk::tray::TrayMenuItem {
+            id: "ping".to_string(),
+            label: "Ping".to_string(),
+            checked: false,
+            enabled: true,
+            separator_before: false,
+            open_path: None,
+        }],
+    };
     let mut testbed_init = HashMap::new();
     testbed_init.insert(
         CAP_LAYOUT_RESERVED_AREA.to_string(),
         json!({ "top_px": 40 }),
     );
     testbed_init.insert(CAP_OSD_WORKSPACE.to_string(), json!({ "enabled": true }));
+    testbed_init.insert(
+        CAP_TRAY_ACTIONS.to_string(),
+        serde_json::to_value(&tb_tray_payload).unwrap(),
+    );
 
     let (tb_node, tb_rx) = NipNode::start(NodeConfig {
         module: "testbed".to_string(),
@@ -719,15 +753,42 @@ pub fn run_nip_self_test() -> Result<(), String> {
         provides: vec![
             CAP_LAYOUT_RESERVED_AREA.to_string(),
             CAP_OSD_WORKSPACE.to_string(),
+            CAP_TRAY_ACTIONS.to_string(),
         ],
         wants: vec![
             CAP_WORKSPACE_STATE.to_string(),
             CAP_LAUNCHER_ACTIONS.to_string(),
+            CAP_TRAY_ACTIONS.to_string(),
         ],
         allowlist: None,
         initial_state: testbed_init,
     })
     .map_err(|e| format!("testbed NipNode start failed: {e}"))?;
+    let tb_node = Arc::new(tb_node);
+
+    let tb_tray = noren_sdk::tray::TrayService::start(noren_sdk::tray::TrayConfig {
+        module: "testbed".to_string(),
+        tooltip: "noren-testbed".to_string(),
+        initial_payload: tb_tray_payload,
+        node: Some(Arc::clone(&tb_node)),
+        on_local_action: Arc::new(|_| {}),
+        on_local_quit: Arc::new(|| {}),
+        on_open_settings: None,
+        headless: true,
+    })
+    .map_err(|e| format!("tb_tray start failed: {e}"))?;
+
+    let wm_tray = noren_sdk::tray::TrayService::start(noren_sdk::tray::TrayConfig {
+        module: "wm".to_string(),
+        tooltip: "noren-wm".to_string(),
+        initial_payload: crate::tray::build_wm_tray_payload(),
+        node: Some(Arc::clone(&wm_node)),
+        on_local_action: Arc::new(|_| {}),
+        on_local_quit: Arc::new(|| {}),
+        on_open_settings: None,
+        headless: true,
+    })
+    .map_err(|e| format!("wm_tray start failed: {e}"))?;
 
     let connected = wait_until(Duration::from_secs(5), || {
         wm_node.is_peer_connected("testbed") && tb_node.is_peer_connected("wm")
@@ -913,16 +974,42 @@ pub fn run_nip_self_test() -> Result<(), String> {
     }
     println!("WM_NIP_TEST_COMMANDS_AND_ALLOWLIST=PASS");
 
-    // Disconnect testbed -> reserved area & OSD provider must fall back
+    // Verify unified tray host election & combined menu snapshot before disconnect
+    if !wait_until(Duration::from_secs(3), || {
+        tb_tray.notify_topology_changed();
+        wm_tray.notify_topology_changed();
+        let snap = tb_tray.menu_snapshot();
+        !snap.standalone_mode
+            && snap.modules.len() == 2
+            && snap.quit_all_label.as_deref() == Some("Quit All")
+    }) {
+        wm_stop.store(true, Ordering::Release);
+        let _ = responder.join();
+        return Err("unified tray snapshot did not combine wm and testbed".into());
+    }
+    if !tb_tray.is_host() || wm_tray.is_host() {
+        wm_stop.store(true, Ordering::Release);
+        let _ = responder.join();
+        return Err(format!(
+            "expected tb_tray host=true wm_tray host=false, got tb={} wm={}",
+            tb_tray.is_host(),
+            wm_tray.is_host()
+        ));
+    }
+
+    // Disconnect testbed -> reserved area, OSD provider, & Tray Host must fall back
+    tb_tray.shutdown();
     tb_node.shutdown();
     let disconnected = wait_until(Duration::from_secs(4), || {
-        !wm_node.is_peer_connected("testbed")
+        wm_tray.notify_topology_changed();
+        !wm_node.is_peer_connected("testbed") && wm_tray.is_host()
     });
     if !disconnected {
         wm_stop.store(true, Ordering::Release);
         let _ = responder.join();
-        return Err("wm did not detect testbed disconnect".into());
+        return Err("wm did not detect testbed disconnect or fail over tray host".into());
     }
+    println!("WM_NIP_TEST_UNIFIED_TRAY=PASS");
     if wm_node.has_capability(CAP_OSD_WORKSPACE) {
         wm_stop.store(true, Ordering::Release);
         let _ = responder.join();
@@ -937,6 +1024,7 @@ pub fn run_nip_self_test() -> Result<(), String> {
     println!("WM_NIP_TEST_RESERVED_AND_OSD_FALLBACK=PASS");
 
     wm_stop.store(true, Ordering::Release);
+    wm_tray.shutdown();
     wm_node.shutdown();
     let _ = responder.join();
     println!("WM_NIP_SELF_TEST=ALL_PASS");

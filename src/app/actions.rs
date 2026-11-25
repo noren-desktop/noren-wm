@@ -113,6 +113,7 @@ impl App {
             self.apply();
             self.update_workspace_tip();
         }
+        tray::sync_state();
     }
 
     /// Win+Alt+I: show the active window's class, exe, and title, plus why it

@@ -1,23 +1,20 @@
-//! Tray icon (right-click menu: Pause / Run at login / Quit) and
-//! autostart settings via the HKCU\...\Run registry key.
+//! Unified Noren tray integration for `noren-wm` + session-end watcher
+//! (`WM_QUERYENDSESSION`/`WM_ENDSESSION`) and autostart settings via HKCU\...\Run.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
+use noren_sdk::tray::{TrayConfig, TrayMenuItem, TrayModulePayload, TrayService};
+use noren_sdk::NipNode;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
 };
-use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW,
-};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-/// Message from the tray icon to our hidden window.
-const WM_TRAY: u32 = WM_APP + 4;
 /// Sent to the main thread: toggle the paused state.
 pub const WM_TRAY_PAUSE: u32 = WM_APP + 5;
 /// Sent to the main thread: reload the configuration file.
@@ -36,19 +33,9 @@ pub const WM_TRAY_SETTINGS: u32 = WM_APP + 30;
 pub static PAUSED: AtomicBool = AtomicBool::new(false);
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
-static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
-static ICON: AtomicIsize = AtomicIsize::new(0);
-static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static SESSION_HWND: AtomicIsize = AtomicIsize::new(0);
 static SESSION_WAS_PAUSED: AtomicBool = AtomicBool::new(false);
-
-const ID_PAUSE: usize = 1;
-const ID_AUTOSTART: usize = 2;
-const ID_QUIT: usize = 3;
-const ID_RELOAD: usize = 4;
-const ID_HELP: usize = 5;
-const ID_LOGS: usize = 6;
-const ID_ELEVATE: usize = 7;
-const ID_SETTINGS: usize = 8;
+static TRAY_SERVICE: Mutex<Option<TrayService>> = Mutex::new(None);
 
 const RUN_SUBKEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
 const RUN_VALUE: PCWSTR = w!("noren-wm");
@@ -96,160 +83,161 @@ pub fn set_autostart(on: bool) -> bool {
     }
 }
 
-// --------------------------------------------------------------------- icons
+// ---------------------------------------------------------------- tray payload & SDK service
 
-/// Build the Noren system tray icon tinted for the current Windows taskbar theme.
-unsafe fn make_icon() -> Option<HICON> {
-    noren_sdk::branding::create_tray_icon(noren_sdk::branding::system_taskbar_is_dark())
-}
-
-unsafe fn refresh_icon(hwnd: HWND) {
-    let Some(new_icon) = make_icon() else {
-        return;
-    };
-    let old_raw = ICON.swap(new_icon.0 as isize, Ordering::Relaxed);
-    let mut n = nid(hwnd);
-    n.uFlags = NIF_ICON;
-    n.hIcon = new_icon;
-    let _ = Shell_NotifyIconW(NIM_MODIFY, &n);
-    if old_raw != 0 {
-        let _ = DestroyIcon(HICON(old_raw as *mut _));
+unsafe fn post_main(msg: u32) {
+    let tid = MAIN_THREAD.load(Ordering::Relaxed);
+    if tid != 0 {
+        let _ = PostThreadMessageW(tid, msg, WPARAM(0), LPARAM(0));
     }
 }
 
-unsafe fn nid(hwnd: HWND) -> NOTIFYICONDATAW {
-    let mut n: NOTIFYICONDATAW = std::mem::zeroed();
-    n.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-    n.hWnd = hwnd;
-    n.uID = 1;
-    n
+pub fn build_wm_tray_payload() -> TrayModulePayload {
+    let paused = PAUSED.load(Ordering::Relaxed);
+    let log_dir = crate::log::log_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let mut items = vec![
+        TrayMenuItem {
+            id: "pause".to_string(),
+            label: if paused { "Resume" } else { "Pause" }.to_string(),
+            checked: paused,
+            enabled: true,
+            separator_before: false,
+            open_path: None,
+        },
+        TrayMenuItem {
+            id: "reload".to_string(),
+            label: "Reload configuration".to_string(),
+            checked: false,
+            enabled: true,
+            separator_before: false,
+            open_path: None,
+        },
+        TrayMenuItem {
+            id: "cheatsheet".to_string(),
+            label: "Keyboard shortcuts".to_string(),
+            checked: false,
+            enabled: true,
+            separator_before: false,
+            open_path: None,
+        },
+        TrayMenuItem {
+            id: "logs".to_string(),
+            label: "Open log folder".to_string(),
+            checked: false,
+            enabled: true,
+            separator_before: false,
+            open_path: Some(log_dir.to_string_lossy().into_owned()),
+        },
+    ];
+
+    if !crate::log::is_elevated() {
+        items.push(TrayMenuItem {
+            id: "elevate".to_string(),
+            label: "Restart as administrator".to_string(),
+            checked: false,
+            enabled: true,
+            separator_before: false,
+            open_path: None,
+        });
+    }
+
+    items.push(TrayMenuItem {
+        id: "autostart".to_string(),
+        label: "Run at login".to_string(),
+        checked: autostart_enabled(),
+        enabled: true,
+        separator_before: false,
+        open_path: None,
+    });
+
+    TrayModulePayload {
+        module: "wm".to_string(),
+        title: "Window Manager".to_string(),
+        paused,
+        items,
+    }
 }
 
-fn copy_tip(n: &mut NOTIFYICONDATAW, text: &str) {
-    let w: Vec<u16> = text.encode_utf16().take(127).collect();
-    n.szTip = [0; 128];
-    n.szTip[..w.len()].copy_from_slice(&w);
+pub fn start_tray_service(main_thread: u32, node: Option<Arc<NipNode>>) {
+    MAIN_THREAD.store(main_thread, Ordering::Relaxed);
+    let cfg = TrayConfig {
+        module: "wm".to_string(),
+        tooltip: "noren-wm".to_string(),
+        initial_payload: build_wm_tray_payload(),
+        node,
+        on_local_action: Arc::new(|id| match id {
+            "pause" => unsafe { post_main(WM_TRAY_PAUSE) },
+            "reload" => unsafe { post_main(WM_TRAY_RELOAD) },
+            "cheatsheet" => unsafe { post_main(WM_TRAY_HELP) },
+            "logs" => crate::log::open_log_folder(),
+            "elevate" => unsafe { post_main(WM_TRAY_ELEVATE) },
+            "autostart" => {
+                let _ = set_autostart(!autostart_enabled());
+                sync_state();
+            }
+            _ => {}
+        }),
+        on_local_quit: Arc::new(|| unsafe { post_main(crate::safety::WM_QUIT_REQUEST) }),
+        on_open_settings: Some(Arc::new(|tab| {
+            let _ = noren_sdk::control_center::open_control_center(tab.or(Some("wm")));
+        })),
+        headless: false,
+    };
+
+    match TrayService::start(cfg) {
+        Ok(svc) => {
+            *TRAY_SERVICE.lock().unwrap() = Some(svc);
+        }
+        Err(e) => {
+            crate::log_warn!("failed to start unified tray service: {e}");
+        }
+    }
 }
 
-unsafe fn add_icon(hwnd: HWND) {
-    let icon = HICON(ICON.load(Ordering::Relaxed) as *mut _);
-    let mut n = nid(hwnd);
-    n.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-    n.uCallbackMessage = WM_TRAY;
-    n.hIcon = icon;
-    copy_tip(&mut n, "noren-wm");
-    let _ = Shell_NotifyIconW(NIM_ADD, &n);
+pub fn sync_state() {
+    if let Some(svc) = TRAY_SERVICE.lock().unwrap().as_ref() {
+        svc.update_local_payload(build_wm_tray_payload());
+    }
 }
 
-pub unsafe fn set_tip(text: &str) {
-    let hwnd = HWND(TRAY_HWND.load(Ordering::Relaxed) as *mut _);
-    let mut n = nid(hwnd);
-    n.uFlags = NIF_TIP;
-    copy_tip(&mut n, text);
-    let _ = Shell_NotifyIconW(NIM_MODIFY, &n);
+pub fn notify_topology_changed() {
+    if let Some(svc) = TRAY_SERVICE.lock().unwrap().as_ref() {
+        svc.notify_topology_changed();
+    }
+}
+
+pub fn request_yield(requester_elevated: bool) -> bool {
+    TRAY_SERVICE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|svc| svc.request_yield(requester_elevated))
+}
+
+pub unsafe fn set_tip(_text: &str) {
+    sync_state();
 }
 
 pub unsafe fn remove() {
-    let hwnd = HWND(TRAY_HWND.load(Ordering::Relaxed) as *mut _);
-    if !hwnd.0.is_null() {
-        let n = nid(hwnd);
-        let _ = Shell_NotifyIconW(NIM_DELETE, &n);
+    if let Some(svc) = TRAY_SERVICE.lock().unwrap().take() {
+        svc.shutdown();
+    }
+    let raw = SESSION_HWND.swap(0, Ordering::AcqRel);
+    if raw != 0 {
+        let _ = DestroyWindow(HWND(raw as *mut c_void));
     }
 }
 
-// --------------------------------------------------------------------- menu
+// ---------------------------------------------------------------- session watcher
 
-unsafe fn post_main(msg: u32) {
-    let _ = PostThreadMessageW(
-        MAIN_THREAD.load(Ordering::Relaxed),
-        msg,
-        WPARAM(0),
-        LPARAM(0),
-    );
-}
-
-unsafe fn show_menu(hwnd: HWND) {
-    let Ok(menu) = CreatePopupMenu() else { return };
-    let paused = PAUSED.load(Ordering::Relaxed);
-    let pause_txt = wide(if paused { "Resume" } else { "Pause" });
-    let settings_txt = wide("Settings (Control Center)");
-    let reload_txt = wide("Reload configuration");
-    let help_txt = wide("Keyboard shortcuts");
-    let logs_txt = wide("Open log folder");
-    let elevate_txt = wide("Restart as administrator");
-    let auto_txt = wide("Run at login");
-    let quit_txt = wide("Quit (restore windows)");
-
-    let _ = AppendMenuW(menu, MF_STRING, ID_PAUSE, PCWSTR(pause_txt.as_ptr()));
-    let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, PCWSTR(settings_txt.as_ptr()));
-    let _ = AppendMenuW(menu, MF_STRING, ID_RELOAD, PCWSTR(reload_txt.as_ptr()));
-    let _ = AppendMenuW(menu, MF_STRING, ID_HELP, PCWSTR(help_txt.as_ptr()));
-    let _ = AppendMenuW(menu, MF_STRING, ID_LOGS, PCWSTR(logs_txt.as_ptr()));
-    if !crate::log::is_elevated() {
-        let _ = AppendMenuW(menu, MF_STRING, ID_ELEVATE, PCWSTR(elevate_txt.as_ptr()));
-    }
-    let auto_flags = if autostart_enabled() {
-        MF_STRING | MF_CHECKED
-    } else {
-        MF_STRING
-    };
-    let _ = AppendMenuW(menu, auto_flags, ID_AUTOSTART, PCWSTR(auto_txt.as_ptr()));
-    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, PCWSTR(quit_txt.as_ptr()));
-
-    let mut pt = POINT::default();
-    let _ = GetCursorPos(&mut pt);
-    // Required to close the menu when the user clicks elsewhere.
-    let _ = SetForegroundWindow(hwnd);
-    let cmd = TrackPopupMenu(
-        menu,
-        TPM_RETURNCMD | TPM_RIGHTBUTTON,
-        pt.x,
-        pt.y,
-        Some(0),
-        hwnd,
-        None,
-    );
-    let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
-    let _ = DestroyMenu(menu);
-
-    match cmd.0 as usize {
-        ID_PAUSE => post_main(WM_TRAY_PAUSE),
-        ID_SETTINGS => post_main(WM_TRAY_SETTINGS),
-        ID_RELOAD => post_main(WM_TRAY_RELOAD),
-        ID_HELP => post_main(WM_TRAY_HELP),
-        ID_LOGS => crate::log::open_log_folder(),
-        ID_ELEVATE => post_main(WM_TRAY_ELEVATE),
-        ID_AUTOSTART => {
-            let _ = set_autostart(!autostart_enabled());
-        }
-        ID_QUIT => post_main(crate::safety::WM_QUIT_REQUEST),
-        _ => {}
-    }
-}
-
-unsafe extern "system" fn tray_proc(
+unsafe extern "system" fn session_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if msg == WM_TRAY {
-        let ev = lparam.0 as u32;
-        if ev == WM_RBUTTONUP || ev == WM_LBUTTONUP || ev == WM_CONTEXTMENU {
-            show_menu(hwnd);
-        }
-        return LRESULT(0);
-    }
-    let tb = TASKBAR_CREATED.load(Ordering::Relaxed);
-    if tb != 0 && msg == tb {
-        add_icon(hwnd); // Explorer restarted: add the icon again.
-        return LRESULT(0);
-    }
-    if msg == WM_SETTINGCHANGE {
-        refresh_icon(hwnd);
-        return LRESULT(0);
-    }
     if msg == WM_QUERYENDSESSION {
         // Pulihkan semua window secara sinkron sebelum app lain menyimpan posisinya.
         let was_paused = PAUSED.swap(true, Ordering::Relaxed);
@@ -289,18 +277,17 @@ unsafe extern "system" fn tray_proc(
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-/// Create a hidden window to receive tray messages and add its icon.
-/// Must be called from the thread running the message loop.
-pub unsafe fn create(main_thread: u32) -> bool {
+/// Create a lightweight hidden top-level window to receive `WM_QUERYENDSESSION` / `WM_ENDSESSION`.
+pub unsafe fn create_session_watcher(main_thread: u32) -> bool {
     MAIN_THREAD.store(main_thread, Ordering::Relaxed);
     let Ok(hmod) = GetModuleHandleW(None) else {
         return false;
     };
     let hinst = HINSTANCE(hmod.0);
-    let class = w!("NorenWmTray");
+    let class = w!("NorenWmSessionWnd");
 
     let wc = WNDCLASSW {
-        lpfnWndProc: Some(tray_proc),
+        lpfnWndProc: Some(session_proc),
         hInstance: hinst,
         lpszClassName: class,
         ..Default::default()
@@ -308,7 +295,6 @@ pub unsafe fn create(main_thread: u32) -> bool {
     if RegisterClassW(&wc) == 0 {
         return false;
     }
-    // Use a top-level window (not a message-only window) to receive the "TaskbarCreated" broadcast.
     let Ok(hwnd) = CreateWindowExW(
         WS_EX_TOOLWINDOW,
         class,
@@ -325,14 +311,6 @@ pub unsafe fn create(main_thread: u32) -> bool {
     ) else {
         return false;
     };
-    TRAY_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
-    TASKBAR_CREATED.store(
-        RegisterWindowMessageW(w!("TaskbarCreated")),
-        Ordering::Relaxed,
-    );
-
-    let icon = make_icon().unwrap_or_else(|| LoadIconW(None, IDI_APPLICATION).unwrap_or_default());
-    ICON.store(icon.0 as isize, Ordering::Relaxed);
-    add_icon(hwnd);
+    SESSION_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
     true
 }
