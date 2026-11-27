@@ -67,7 +67,7 @@ impl App {
         let ids: Vec<WindowId> = snap
             .strips
             .iter()
-            .flat_map(|s| s.items.iter().map(|it| it.id))
+            .flat_map(|s| s.spaces.iter().flat_map(|sp| sp.items.iter().map(|it| it.id)))
             .collect();
         for id in &ids {
             if !self.idents.contains_key(id) {

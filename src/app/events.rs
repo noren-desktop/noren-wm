@@ -21,7 +21,6 @@ use crate::consts::{
 };
 use crate::winutil::{manageable, wid};
 use crate::{cheatsheet, hook, tray};
-use crate::config::HeightMode;
 use layout::{Dir, Rect, WindowId};
 
 impl App {
@@ -102,11 +101,7 @@ impl App {
         }
         self.sync();
         match id {
-            // Step mode: Win+↑/↓ adjusts height incrementally instead of jumping between presets.
-            3 | 4 if self.cfg.height_mode == HeightMode::Step => {
-                let step = self.cfg.height_step;
-                self.ws.cur_mut().adjust_height(if id == 3 { -step } else { step });
-            }
+            // 2D Space snap: Left/Right (Left <-> Full <-> Right), Up/Down (Top <-> Full <-> Bottom).
             1..=4 => self.ws.cur_mut().snap(DIRS[(id - 1) as usize].1),
             5..=8 => self.ws.cur_mut().focus(DIRS[(id - 5) as usize].1),
             HOTKEY_MAXIMIZE => self.ws.cur_mut().maximize(),

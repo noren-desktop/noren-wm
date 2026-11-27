@@ -85,21 +85,37 @@ pub fn build_slots(ov: &Overview, src: WindowId) -> Vec<PickSlot> {
         }];
     }
 
-    // Group other windows into vertical blocks (overlapping y-ranges).
+    // Group other windows by Space index when space_h is known, otherwise by overlapping y-ranges.
     let mut sorted = others;
     sorted.sort_by_key(|it| (it.rect.y, it.rect.x));
     let mut blocks: Vec<(i32, i32, Vec<layout::OverviewItem>)> = Vec::new();
-    for it in sorted {
-        let top = it.rect.y;
-        let bot = it.rect.y + it.rect.h;
-        if let Some(last) = blocks.last_mut() {
-            if top < last.1 - SLACK {
-                last.1 = last.1.max(bot);
-                last.2.push(it);
-                continue;
+    let space_h = ov.space_h;
+    if space_h > 0 {
+        for it in sorted {
+            let s_idx = it.rect.y.max(0) / space_h;
+            let s_top = s_idx * space_h;
+            let s_bot = s_top + space_h;
+            if let Some(last) = blocks.last_mut() {
+                if last.0 == s_top {
+                    last.2.push(it);
+                    continue;
+                }
             }
+            blocks.push((s_top, s_bot, vec![it]));
         }
-        blocks.push((top, bot, vec![it]));
+    } else {
+        for it in sorted {
+            let top = it.rect.y;
+            let bot = it.rect.y + it.rect.h;
+            if let Some(last) = blocks.last_mut() {
+                if top < last.1 - SLACK {
+                    last.1 = last.1.max(bot);
+                    last.2.push(it);
+                    continue;
+                }
+            }
+            blocks.push((top, bot, vec![it]));
+        }
     }
 
     let mut slots = Vec::new();
@@ -658,6 +674,8 @@ mod tests {
             height: 1080,
             view_y: 0,
             view_h: 1080,
+            space_h: 1080,
+            space_count: 1,
         };
         let slots = build_slots(&ov, B);
         assert!(slots.iter().any(|s| s.target == PickTarget::Beside(A)));
@@ -677,6 +695,8 @@ mod tests {
             height: 1080,
             view_y: 0,
             view_h: 1080,
+            space_h: 1080,
+            space_count: 0,
         };
         let slots = build_slots(&ov, A);
         assert_eq!(slots.len(), 1);

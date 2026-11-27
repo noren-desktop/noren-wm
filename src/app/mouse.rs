@@ -43,6 +43,25 @@ pub(crate) fn divider_shift(span: Span, before: Bounds, after: Bounds) -> Option
     }
 }
 
+/// If only the top or bottom edge of a window was dragged (width unchanged),
+/// returns `Some((top_edge, delta_px))` where `delta_px > 0` means downward.
+pub(crate) fn vertical_edge_shift(before: Bounds, after: Bounds) -> Option<(bool, i32)> {
+    let (l0, t0, r0, b0) = before;
+    let (l1, t1, r1, b1) = after;
+    if (l1 - l0).abs() > TOL || (r1 - r0).abs() > TOL {
+        return None;
+    }
+    let dt = t1 - t0;
+    let db = b1 - b0;
+    if dt.abs() > TOL && db.abs() <= TOL {
+        Some((true, dt))
+    } else if db.abs() > TOL && dt.abs() <= TOL {
+        Some((false, db))
+    } else {
+        None
+    }
+}
+
 /// Window (other than `skip`) containing point (x, y).
 pub(crate) fn window_at(
     x: i32,
@@ -97,17 +116,17 @@ impl App {
             }
             return; // Not dropped on another window: sync restores it to its original position.
         }
-        let span = self
-            .ws
-            .cur()
-            .items()
-            .iter()
-            .find(|it| it.id == id)
-            .map(|it| it.span);
+        let span = self.ws.cur().item(id).map(|it| it.span);
         if let Some(dx) = span.and_then(|s| divider_shift(s, before, after)) {
             self.ws.cur_mut().set_focus(id);
             self.ws.cur_mut().adjust_split(dx);
             self.apply(); // New divider; if rejected (limit), the window returns to its column.
+            return;
+        }
+        if let Some((top_edge, dy)) = vertical_edge_shift(before, after) {
+            self.ws.cur_mut().set_focus(id);
+            self.ws.cur_mut().adjust_vertical_edge(id, top_edge, dy);
+            self.apply();
         }
     }
 }
@@ -153,5 +172,13 @@ mod tests {
         assert_eq!(window_at(100, 100, b, &rects), Some(a));
         assert_eq!(window_at(1200, 100, a, &rects), None);
         assert_eq!(window_at(500, 0, a, &rects), Some(b)); // Left edge is included.
+    }
+
+    #[test]
+    fn dragging_top_or_bottom_edge_detects_vertical_resize() {
+        assert_eq!(vertical_edge_shift(B0, (100, 120, 900, 650)), Some((true, 70)));
+        assert_eq!(vertical_edge_shift(B0, (100, 50, 900, 750)), Some((false, 100)));
+        assert_eq!(vertical_edge_shift(B0, (100, 50, 950, 750)), None); // Width also changed.
+        assert_eq!(vertical_edge_shift(B0, (100, 52, 900, 650)), None); // Small jitter.
     }
 }

@@ -86,6 +86,8 @@ pub struct DrawColumn {
     pub rect: RECT,
     /// Frame around the strip section currently visible on screen.
     pub view: RECT,
+    /// Visual boundary frame for each Space in this workspace (content coordinates).
+    pub space_frames: Vec<RECT>,
 }
 
 /// A workspace card in the bottom bar (Windows 11 Task View Desktop bar style).
@@ -121,6 +123,8 @@ pub struct DrawMinimap {
     pub strip_rect: RECT,
     /// `view` frame (area visible on the desktop) at minimap scale.
     pub view_rect: RECT,
+    /// Visual boundary frame for each Space at minimap scale.
+    pub space_frames: Vec<RECT>,
     /// All windows in the strip at minimap scale.
     pub items: Vec<MinimapItem>,
 }
@@ -1038,6 +1042,22 @@ pub fn build(
             });
         }
 
+        let space_frames: Vec<RECT> = if ov.space_h > 0 && ov.space_count > 0 {
+            (0..ov.space_count)
+                .map(|s| {
+                    let st = top + sc(s as i32 * ov.space_h);
+                    RECT {
+                        left: cx,
+                        top: st,
+                        right: cx + col_w,
+                        bottom: st + sc(ov.space_h),
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let vt = top + sc(ov.view_y);
         columns.push(DrawColumn {
             number: ws + 1,
@@ -1053,6 +1073,7 @@ pub fn build(
                 right: cx + col_w,
                 bottom: vt + sc(ov.view_h),
             },
+            space_frames,
         });
 
         let init_scroll = sc(ov.view_y).clamp(0, max_scroll);
@@ -1107,6 +1128,21 @@ pub fn build(
                 })
                 .collect();
 
+            let m_space_frames: Vec<RECT> = if ov.space_h > 0 && ov.space_count > 0 {
+                (0..ov.space_count)
+                    .map(|s| {
+                        let st = my0 + msc(s as i32 * ov.space_h);
+                        RECT {
+                            left: mx0,
+                            top: st,
+                            right: mx0 + m_strip_w,
+                            bottom: st + msc(ov.space_h),
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let m_view = RECT {
                 left: mx0,
                 top: my0 + msc(ov.view_y),
@@ -1122,6 +1158,7 @@ pub fn build(
                     bottom: my0 + m_strip_h,
                 },
                 view_rect: m_view,
+                space_frames: m_space_frames,
                 items: m_items,
             });
         }
@@ -1658,8 +1695,12 @@ unsafe fn paint(hwnd: HWND) {
                 }
             }
 
-            // Frame around the strip section currently visible on screen (`view`).
+            // Subtle Space boundary frames + active Space (`view`) highlight.
             for c in &d.columns {
+                for sf in &c.space_frames {
+                    let sr = shift_y(*sf, -d.scroll_y);
+                    canvas.stroke_round_rect(sr, 8.0, pal.stroke, 110, 1.0);
+                }
                 let v = shift_y(c.view, -d.scroll_y);
                 if d.items.is_empty() {
                     canvas.fill_round_rect(v, 10.0, pal.layer, 180);
@@ -1765,6 +1806,10 @@ unsafe fn paint(hwnd: HWND) {
                         bottom: (sy0 + sh).min(mm.strip_rect.bottom + 2),
                     };
                     canvas.fill_round_rect(slider, 5.0, pal.text, if pal.dark { 22 } else { 18 });
+                }
+
+                for sf in &mm.space_frames {
+                    canvas.stroke_round_rect(*sf, 4.0, pal.stroke, 95, 1.0);
                 }
 
                 for it in &mm.items {
@@ -2685,6 +2730,8 @@ mod tests {
             height: 1080,
             view_y: 0,
             view_h: 1080,
+            space_h: 1080,
+            space_count: 1,
         }
     }
 
@@ -2967,7 +3014,12 @@ mod tests {
 
     fn column(number: usize, l: i32, t: i32, r: i32, b: i32) -> DrawColumn {
         let rect = RECT { left: l, top: t, right: r, bottom: b };
-        DrawColumn { number, rect, view: rect }
+        DrawColumn {
+            number,
+            rect,
+            view: rect,
+            space_frames: Vec::new(),
+        }
     }
 
     fn dock_card(number: usize, current: bool, l: i32, t: i32, r: i32, b: i32) -> DrawDockCard {

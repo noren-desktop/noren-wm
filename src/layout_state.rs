@@ -1,12 +1,13 @@
 //! layout.state file: saved workspace layouts are restored when noren-wm is
-//! restarted while its windows are still open, preserving their order / width /
-//! height / workspace. Plain text, one line per item:
+//! restarted while its windows are still open, preserving their spaces, positions,
+//! heights, and split ratios. Plain text format (`noren-layout 2`):
 //!
-//!   noren-layout 1
+//!   noren-layout 2
 //!   active 1
 //!   strip
 //!   focus 197634
-//!   item 197634 left half full 500 chrome.exe|Chrome_WidgetWin_1
+//!   space 500
+//!   item 197634 left 0 half left chrome.exe|Chrome_WidgetWin_1
 //!
 //! Windows are identified by their handles (valid while the window is open) plus
 //! an `exe|class` identity, so a handle reused by another window (e.g. after a
@@ -15,9 +16,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use layout::{Height, Item, SavedLayout, SavedStrip, Span, WindowId};
+use layout::{Height, Item, SavedLayout, SavedSpace, SavedStrip, Span, WindowId};
 
-const HEADER: &str = "noren-layout 1";
+const HEADER: &str = "noren-layout 2";
 
 /// %LOCALAPPDATA%\noren-wm\layout.state (or next to the executable if unavailable).
 pub fn path() -> Option<PathBuf> {
@@ -75,12 +76,18 @@ pub fn encode(saved: &SavedLayout, ident: impl Fn(WindowId) -> Option<String>) -
     let mut kept = 0usize;
     let mut active = 0usize;
     for (k, s) in saved.strips.iter().enumerate() {
-        let items: Vec<(&Item, String)> = s
-            .items
-            .iter()
-            .filter_map(|it| ident(it.id).map(|i| (it, i.replace(['\r', '\n'], " "))))
-            .collect();
-        if items.is_empty() {
+        let mut spaces: Vec<(i32, Vec<(&Item, String)>)> = Vec::new();
+        for sp in &s.spaces {
+            let items: Vec<(&Item, String)> = sp
+                .items
+                .iter()
+                .filter_map(|it| ident(it.id).map(|i| (it, i.replace(['\r', '\n'], " "))))
+                .collect();
+            if !items.is_empty() {
+                spaces.push((sp.split, items));
+            }
+        }
+        if spaces.is_empty() {
             continue;
         }
         if k == saved.active {
@@ -88,22 +95,26 @@ pub fn encode(saved: &SavedLayout, ident: impl Fn(WindowId) -> Option<String>) -
         }
         kept += 1;
         body.push_str("strip\n");
-        if let Some(f) = s
-            .focused
-            .filter(|f| items.iter().any(|(it, _)| it.id == *f))
-        {
+        if let Some(f) = s.focused.filter(|f| {
+            spaces
+                .iter()
+                .any(|(_, items)| items.iter().any(|(it, _)| it.id == *f))
+        }) {
             body.push_str(&format!("focus {}\n", f.0));
         }
-        for (it, id) in items {
-            body.push_str(&format!(
-                "item {} {} {} {} {} {}\n",
-                it.id.0,
-                span_str(it.span),
-                height_str(it.height),
-                span_str(it.restore),
-                it.split,
-                id
-            ));
+        for (split, items) in spaces {
+            body.push_str(&format!("space {split}\n"));
+            for (it, id) in items {
+                body.push_str(&format!(
+                    "item {} {} {} {} {} {}\n",
+                    it.id.0,
+                    span_str(it.span),
+                    it.top,
+                    height_str(it.height),
+                    span_str(it.restore),
+                    id
+                ));
+            }
         }
     }
     format!("{HEADER}\nactive {active}\n{body}")
@@ -127,25 +138,33 @@ pub fn decode(text: &str) -> Option<(SavedLayout, HashMap<u64, String>)> {
             active = v.trim().parse().ok()?;
         } else if line == "strip" {
             strips.push(SavedStrip {
-                items: Vec::new(),
+                spaces: Vec::new(),
                 focused: None,
             });
         } else if let Some(v) = line.strip_prefix("focus ") {
             strips.last_mut()?.focused = Some(WindowId(v.trim().parse().ok()?));
+        } else if let Some(v) = line.strip_prefix("space ") {
+            let split: i32 = v.trim().parse().ok()?;
+            strips.last_mut()?.spaces.push(SavedSpace {
+                split: split.clamp(150, 850),
+                items: Vec::new(),
+            });
         } else if let Some(v) = line.strip_prefix("item ") {
             let mut f = v.splitn(6, ' ');
             let id: u64 = f.next()?.parse().ok()?;
             let span = parse_span(f.next()?)?;
+            let top: i32 = f.next()?.parse().ok()?;
             let height = parse_height(f.next()?)?;
             let restore = parse_span(f.next()?)?;
-            let split: i32 = f.next()?.parse().ok()?;
             let ident = f.next()?.to_string();
-            strips.last_mut()?.items.push(Item {
+            let sp = strips.last_mut()?.spaces.last_mut()?;
+            sp.items.push(Item {
                 id: WindowId(id),
                 span,
+                top: top.clamp(0, 850),
                 height,
                 restore,
-                split: split.clamp(100, 900),
+                split: sp.split,
             });
             idents.insert(id, ident);
         } else {
@@ -163,9 +182,10 @@ mod tests {
     use super::*;
 
     fn sample() -> SavedLayout {
-        let item = |id: u64, span, height, split| Item {
+        let item = |id: u64, span, top, height, split| Item {
             id: WindowId(id),
             span,
+            top,
             height,
             restore: span,
             split,
@@ -174,18 +194,24 @@ mod tests {
             active: 1,
             strips: vec![
                 SavedStrip {
-                    items: vec![
-                        item(10, Span::Left, Height::Half, 500),
-                        item(11, Span::Right, Height::Custom(420), 620),
-                    ],
+                    spaces: vec![SavedSpace {
+                        split: 620,
+                        items: vec![
+                            item(10, Span::Left, 0, Height::Half, 620),
+                            item(11, Span::Right, 500, Height::Custom(420), 620),
+                        ],
+                    }],
                     focused: Some(WindowId(11)),
                 },
                 SavedStrip {
-                    items: vec![item(12, Span::Full, Height::Full, 500)],
+                    spaces: vec![SavedSpace {
+                        split: 500,
+                        items: vec![item(12, Span::Full, 0, Height::Full, 500)],
+                    }],
                     focused: Some(WindowId(12)),
                 },
                 SavedStrip {
-                    items: Vec::new(),
+                    spaces: Vec::new(),
                     focused: None,
                 },
             ],
@@ -198,9 +224,9 @@ mod tests {
         let text = encode(&sample(), ident);
         let (back, idents) = decode(&text).expect("decodes");
         let mut want = sample();
-        want.strips.pop(); // Empty workspaces are not saved.
+        want.strips.pop();
         assert_eq!(back, want);
-        assert_eq!(idents[&10], "app10.exe|Some Class 10"); // Spaces in the identity are preserved.
+        assert_eq!(idents[&10], "app10.exe|Some Class 10");
         assert_eq!(idents.len(), 3);
     }
 
@@ -208,14 +234,13 @@ mod tests {
     fn windows_without_identity_are_not_saved() {
         let text = encode(&sample(), |id| (id.0 != 11).then(|| "a|b".to_string()));
         let (back, _) = decode(&text).unwrap();
-        assert_eq!(back.strips[0].items.len(), 1);
-        assert_eq!(back.strips[0].focused, None); // Focused window is not included.
+        assert_eq!(back.strips[0].spaces[0].items.len(), 1);
+        assert_eq!(back.strips[0].focused, None);
         assert_eq!(back.active, 1);
     }
 
     #[test]
     fn active_index_follows_dropped_workspaces() {
-        // Workspace 0 has no known windows: the active workspace (previously 1) becomes 0.
         let text = encode(&sample(), |id| (id.0 == 12).then(|| "a|b".to_string()));
         let (back, _) = decode(&text).unwrap();
         assert_eq!(back.strips.len(), 1);
@@ -225,19 +250,19 @@ mod tests {
     #[test]
     fn rejects_unknown_or_broken_files() {
         assert!(decode("").is_none());
-        assert!(decode("something else\n").is_none());
-        assert!(decode("noren-layout 1\nactive 0\n").is_none()); // No workspace.
-        assert!(decode("noren-layout 1\nitem 1 full full full 500 a|b\n").is_none()); // Item without a strip.
-        assert!(decode("noren-layout 1\nstrip\nitem x full full full 500 a|b\n").is_none());
-        assert!(decode("noren-layout 1\nstrip\nitem 1 wide full full 500 a|b\n").is_none());
-        assert!(decode("noren-layout 1\nstrip\nbogus line\n").is_none());
+        assert!(decode("noren-layout 1\nactive 0\n").is_none()); // Old version cleanly ignored.
+        assert!(decode("noren-layout 2\nactive 0\n").is_none());
+        assert!(decode("noren-layout 2\nstrip\nitem 1 full 0 full full a|b\n").is_none()); // No space.
+        assert!(decode("noren-layout 2\nstrip\nspace 500\nbogus\n").is_none());
     }
 
     #[test]
     fn out_of_range_numbers_are_clamped() {
-        let (back, _) = decode("noren-layout 1\nstrip\nitem 1 left c5 left 9999 a|b\n").unwrap();
-        let it = back.strips[0].items[0];
-        assert_eq!(it.height, Height::Custom(150));
-        assert_eq!(it.split, 900);
+        let (back, _) =
+            decode("noren-layout 2\nstrip\nspace 9999\nitem 1 left 9999 c5 left a|b\n").unwrap();
+        let sp = &back.strips[0].spaces[0];
+        assert_eq!(sp.split, 850);
+        assert_eq!(sp.items[0].top, 850);
+        assert_eq!(sp.items[0].height, Height::Custom(150));
     }
 }
