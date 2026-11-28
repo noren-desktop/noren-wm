@@ -15,8 +15,8 @@ use super::{App, JoinAim};
 use crate::consts::{
     DIRS, EVENT_DEBOUNCE_MS, HOTKEY_CHEATSHEET, HOTKEY_CLOSE, HOTKEY_FLOAT, HOTKEY_INSPECT,
     HOTKEY_JOIN_DOWN, HOTKEY_JOIN_LEFT, HOTKEY_MAXIMIZE, HOTKEY_MINIMIZE, HOTKEY_OVERVIEW,
-    HOTKEY_PICK, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET, HOTKEY_SPLIT_RIGHT, HOTKEY_STICKY,
-    HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP, HOTKEY_WS_PREV, HOTKEY_WS_SEND,
+    HOTKEY_PICK, HOTKEY_SLOT_SELECT, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET, HOTKEY_SPLIT_RIGHT,
+    HOTKEY_STICKY, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP, HOTKEY_WS_PREV, HOTKEY_WS_SEND,
     HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV,
 };
 use crate::winutil::{manageable, wid};
@@ -76,6 +76,13 @@ impl App {
         }
         if self.snap_assist.is_some() {
             self.snap_assist_end(true); // Any shortcut closes the snap layouts window list.
+        }
+        if id == HOTKEY_SLOT_SELECT {
+            self.selector_open();
+            return;
+        }
+        if self.selector.is_some() {
+            self.selector_cancel();
         }
         if id == HOTKEY_PICK {
             self.toggle_pick();

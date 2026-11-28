@@ -7,6 +7,7 @@ mod mouse;
 mod overview_ctl;
 mod persist;
 mod pick;
+mod selector;
 mod snap;
 mod workspace;
 
@@ -118,6 +119,8 @@ pub(crate) struct App {
     pub(crate) join_aim: Option<JoinAim>,
     /// Lift-and-drop (`pick`) mode with an overlay marker on the desktop.
     pub(crate) pick: Option<PickSession>,
+    /// In-slot Stacked Card Deck selector (`Win+Grave`).
+    pub(crate) selector: Option<selector::SelectorSession>,
     /// Reserved outer screen insets from `layout.reserved-area` providers (e.g. Bar).
     pub(crate) reserved: nip::ReservedAreaTracker,
     /// Optional NIP node runtime (None in tests or if pipe startup failed).
@@ -149,6 +152,7 @@ impl App {
             snap_assist: None,
             join_aim: None,
             pick: None,
+            selector: None,
             anim_ms: DEFAULT_ANIM_MS,
             focus_border: None,
             border_applied: None,
@@ -329,6 +333,7 @@ impl App {
         let fg = wid(fg_hwnd);
         if self.join_aim.is_none()
             && self.pick.is_none()
+            && self.selector.is_none()
             && ((added && !self.parked.contains(&fg)) || self.last_fg != Some(fg))
         {
             let prev_fg = self.last_fg;

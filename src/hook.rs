@@ -14,9 +14,10 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::bindings::{self, ALT, CTRL, SHIFT, WIN};
 use crate::consts::{
-    DIRS, HOTKEY_OVERVIEW, HOTKEY_PICK, HOTKEY_QUIT, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_PREV,
-    WM_ACTION, WM_JOIN_CANCEL, WM_JOIN_COMMIT, WM_PICK_ACCEPT, WM_PICK_CANCEL, WM_PICK_MOVE,
-    WM_SNAP_CANCEL, WM_WINEVENT,
+    DIRS, HOTKEY_OVERVIEW, HOTKEY_PICK, HOTKEY_QUIT, HOTKEY_SLOT_SELECT, HOTKEY_WS_GO,
+    HOTKEY_WS_NEXT, HOTKEY_WS_PREV, WM_ACTION, WM_JOIN_CANCEL, WM_JOIN_COMMIT, WM_PICK_ACCEPT,
+    WM_PICK_CANCEL, WM_PICK_MOVE, WM_SEL_CANCEL, WM_SEL_COMMIT, WM_SEL_STEP, WM_SNAP_CANCEL,
+    WM_WINEVENT,
 };
 use crate::{overview, tray};
 
@@ -44,6 +45,11 @@ pub(crate) static OV_MOVED: AtomicBool = AtomicBool::new(false);
 /// Lift-and-drop (`pick`) mode is active: arrows move the marker, Enter / Space
 /// drops, Esc cancels.
 pub(crate) static PICK_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// In-slot Stacked Card Deck selector (`Win+Grave`) is active.
+pub(crate) static SEL_OPEN: AtomicBool = AtomicBool::new(false);
+/// Selection has moved while holding Win; releasing Win commits immediately.
+pub(crate) static SEL_MOVED: AtomicBool = AtomicBool::new(false);
 
 /// `join` targeting mode is active (kept in case modifier-hold mode is used again):
 /// releasing any modifier in `JOIN_MODS` sends `WM_JOIN_COMMIT`; Esc cancels.
@@ -179,6 +185,83 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
             let vk = k.vkCode as u16;
             if !down && HELD_VK.load(Ordering::Relaxed) == vk {
                 HELD_VK.store(0, Ordering::Relaxed);
+            }
+            // In-slot Stacked Card Deck selector (`Win+Alt+Tab`): arrows / Tab / trigger key
+            // cycle cards, Enter / Space / releasing Win or Alt (after stepping) commits, Esc cancels.
+            if SEL_OPEN.load(Ordering::Relaxed) {
+                if !down
+                    && (vk == VK_LWIN.0
+                        || vk == VK_RWIN.0
+                        || vk == VK_MENU.0
+                        || vk == VK_LMENU.0
+                        || vk == VK_RMENU.0)
+                {
+                    if vk == VK_LWIN.0 || vk == VK_RWIN.0 {
+                        WIN_DOWN.store(false, Ordering::Relaxed);
+                        HELD_VK.store(0, Ordering::Relaxed);
+                    }
+                    if SEL_MOVED.swap(false, Ordering::Relaxed) {
+                        let _ = PostThreadMessageW(
+                            MAIN_THREAD.load(Ordering::Relaxed),
+                            WM_SEL_COMMIT,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                    return CallNextHookEx(None, code, wparam, lparam);
+                }
+                let win = WIN_DOWN.load(Ordering::Relaxed);
+                let held = held_mods();
+                let shift = held & SHIFT != 0;
+                let emergency_quit = vk == VK_ESCAPE.0 && win && (held & CTRL != 0);
+                let bound = if win {
+                    bindings::lookup_active(WIN | held, vk)
+                } else if held != 0 {
+                    bindings::lookup_active(held, vk)
+                } else {
+                    None
+                };
+                if !emergency_quit {
+                    let action = if bound == Some(HOTKEY_SLOT_SELECT)
+                        || vk == VK_OEM_3.0
+                        || vk == VK_TAB.0
+                    {
+                        Some((WM_SEL_STEP, usize::from(!shift), true, true))
+                    } else if vk == VK_DOWN.0 || vk == VK_RIGHT.0 {
+                        Some((WM_SEL_STEP, 1, true, true))
+                    } else if vk == VK_UP.0 || vk == VK_LEFT.0 {
+                        Some((WM_SEL_STEP, 0, true, true))
+                    } else if vk == VK_RETURN.0
+                        || (vk == VK_SPACE.0 && !win && held == 0)
+                    {
+                        Some((WM_SEL_COMMIT, 0, false, false))
+                    } else if vk == VK_ESCAPE.0 {
+                        Some((WM_SEL_CANCEL, 0, false, false))
+                    } else {
+                        None
+                    };
+                    if let Some((msg, wp, repeat_ok, moves)) = action {
+                        if down {
+                            let repeat = HELD_VK.swap(vk, Ordering::Relaxed) == vk;
+                            if repeat && !repeat_ok {
+                                return LRESULT(1);
+                            }
+                            if moves {
+                                SEL_MOVED.store(true, Ordering::Relaxed);
+                            }
+                            let _ = PostThreadMessageW(
+                                MAIN_THREAD.load(Ordering::Relaxed),
+                                msg,
+                                WPARAM(wp),
+                                LPARAM(0),
+                            );
+                            if win {
+                                cancel_start_menu();
+                            }
+                        }
+                        return LRESULT(1);
+                    }
+                }
             }
             // Lift-and-drop (`pick`) mode: arrows move the marker, Enter / Space
             // drops, Esc / pick key cancels. Win+Ctrl+Esc remains the emergency exit.

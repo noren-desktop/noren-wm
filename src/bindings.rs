@@ -21,9 +21,9 @@ use std::sync::RwLock;
 use crate::consts::{
     HOTKEY_CHEATSHEET, HOTKEY_CLOSE, HOTKEY_FLOAT, HOTKEY_INSPECT, HOTKEY_JOIN_DOWN,
     HOTKEY_JOIN_LEFT, HOTKEY_JOIN_RIGHT, HOTKEY_JOIN_UP, HOTKEY_MAXIMIZE, HOTKEY_MINIMIZE,
-    HOTKEY_OVERVIEW, HOTKEY_PICK, HOTKEY_QUIT, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET,
-    HOTKEY_SPLIT_RIGHT, HOTKEY_STICKY, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP,
-    HOTKEY_WS_PREV, HOTKEY_WS_SEND, HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV,
+    HOTKEY_OVERVIEW, HOTKEY_PICK, HOTKEY_QUIT, HOTKEY_SLOT_SELECT, HOTKEY_SPLIT_LEFT,
+    HOTKEY_SPLIT_RESET, HOTKEY_SPLIT_RIGHT, HOTKEY_STICKY, HOTKEY_WS_GO, HOTKEY_WS_NEXT,
+    HOTKEY_WS_NOOP, HOTKEY_WS_PREV, HOTKEY_WS_SEND, HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV,
 };
 
 // ---------------------------------------------------------------- modifiers
@@ -149,6 +149,13 @@ pub const ACTIONS: &[ActionDef] = &[
         G_LAYOUT,
         "pick up window and choose drop spot",
         &["win+alt+space"],
+    ),
+    act(
+        "slot_select",
+        HOTKEY_SLOT_SELECT,
+        G_LAYOUT,
+        "replace active slot with another window (steal)",
+        &["win+alt+tab"],
     ),
     rep("split_right", HOTKEY_SPLIT_RIGHT, G_LAYOUT, D_DIVIDER, &["win+]"]),
     rep("split_left", HOTKEY_SPLIT_LEFT, G_LAYOUT, D_DIVIDER, &["win+["]),

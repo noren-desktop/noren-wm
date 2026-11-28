@@ -85,6 +85,15 @@ pub(crate) const WM_PICK_ACCEPT: u32 = WM_APP + 25;
 /// Lift-and-drop (`pick`) mode: cancel.
 pub(crate) const WM_PICK_CANCEL: u32 = WM_APP + 26;
 
+/// In-slot Stacked Card Deck selector: step forward (wParam = 1) or backward (wParam = 0).
+pub(crate) const WM_SEL_STEP: u32 = WM_APP + 40;
+
+/// In-slot Stacked Card Deck selector: commit/steal selected window.
+pub(crate) const WM_SEL_COMMIT: u32 = WM_APP + 41;
+
+/// In-slot Stacked Card Deck selector: cancel.
+pub(crate) const WM_SEL_CANCEL: u32 = WM_APP + 42;
+
 /// Interval (ms) for tracking the cursor while a window is dragged for the snap layouts menu.
 pub(crate) const SNAP_TICK_MS: u32 = 16;
 
@@ -105,6 +114,9 @@ pub(crate) const HOTKEY_PICK: i32 = 54;
 
 /// Win+Alt+S -> sticky overlay (always on top across all workspaces).
 pub(crate) const HOTKEY_STICKY: i32 = 55;
+
+/// Win+Alt+Tab -> in-slot stacked card deck selector (steal another window into active slot).
+pub(crate) const HOTKEY_SLOT_SELECT: i32 = 56;
 
 /// Parking x-position for windows in other workspaces: the USER32 lower bound (i16::MIN);
 /// smaller values are clamped to this. Deliberately not -32000 (the old "minimized" position).

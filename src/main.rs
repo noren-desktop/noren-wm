@@ -42,6 +42,7 @@ mod overview;
 mod pick_overlay;
 mod rules;
 mod safety;
+mod slot_selector;
 mod snap_menu;
 mod snap_slots;
 mod taskbar;
@@ -70,7 +71,7 @@ use crate::app::App;
 use crate::consts::{
     DIRS, HOTKEY_FLOAT, HOTKEY_INSPECT, HOTKEY_MAXIMIZE, HOTKEY_OVERVIEW, HOTKEY_QUIT, RECHECK_MS,
     WM_ACTION, WM_JOIN_CANCEL, WM_JOIN_COMMIT, WM_PICK_ACCEPT, WM_PICK_CANCEL, WM_PICK_MOVE,
-    WM_SNAP_CANCEL, WM_SNAP_PICK, WM_WINEVENT,
+    WM_SEL_CANCEL, WM_SEL_COMMIT, WM_SEL_STEP, WM_SNAP_CANCEL, WM_SNAP_PICK, WM_WINEVENT,
 };
 use crate::hook::{win_event_proc, KeyboardHookThread, MAIN_THREAD};
 use crate::winutil::{release_single_instance, single_instance};
@@ -184,6 +185,9 @@ fn main() {
         }
         if !pick_overlay::init() {
             log_warn!("failed to create pick overlay window");
+        }
+        if !slot_selector::init(GetCurrentThreadId()) {
+            log_warn!("failed to create slot selector window");
         }
         let dpi_scale = GetDpiForSystem() as f32 / 96.0;
         if !snap_menu::init(dpi_scale) {
@@ -346,6 +350,9 @@ fn main() {
                 WM_PICK_MOVE => app.pick_move(msg.wParam.0),
                 WM_PICK_ACCEPT => app.pick_accept(),
                 WM_PICK_CANCEL => app.pick_cancel(),
+                WM_SEL_STEP => app.selector_step(msg.wParam.0 != 0),
+                WM_SEL_COMMIT => app.selector_commit(),
+                WM_SEL_CANCEL => app.selector_cancel(),
                 WM_WINEVENT => {
                     if !tray::PAUSED.load(Ordering::Relaxed) {
                         app.on_event(msg.wParam.0 as u32, HWND(msg.lParam.0 as *mut c_void));
